@@ -1,0 +1,26 @@
+name: canary (transformers main)
+
+# Catches upstream Cache-API breakage before it lands in a release.
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project with transformers@main
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "transformers @ git+https://github.com/huggingface/transformers.git"
+          pip install -e ".[dev]"
+      - name: pytest
+        run: pytest -n auto

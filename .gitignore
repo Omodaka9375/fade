@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Model weights & checkpoints
+*.pt
+*.bin
+*.safetensors
+*.gguf
+fade/checkpoints/
+
+# HuggingFace / model cache
+hf_cache/
+.cache/
+
+# Experiment outputs
+outputs/
+runs/
+wandb/
+*.csv
+*.jsonl
+
+# Telemetry & debug dumps
+tier_events*.jsonl
+snapshot*.json
+
+# Pre-commit
+.pre-commit-cache/

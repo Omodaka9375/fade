@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fade"
+version = "0.2.0"
+description = "FADE: Frequency-Adaptive Decay Encoding — attention-aware tiered KV cache compression for LLM inference."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "FADE" }]
+keywords = ["llm", "inference", "kv-cache", "quantization", "transformers"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.2",
+    # Pinned to the two minors we actively test against.
+    "transformers>=4.45,<5.4",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# GPU-only helpers that should not be required for CPU-based unit tests.
+cuda = ["accelerate>=0.34"]
+# Evaluation harness extras (perplexity corpora, needle, lm-eval wiring).
+eval = ["datasets>=2.20", "accelerate>=0.34"]
+# Phase 3 product-quantization codebook trainer.
+codebook = ["scikit-learn>=1.4"]
+# Future serving adapters (vLLM/SGLang). Kept empty so the extra exists but
+# doesn't pull heavy deps into default installs.
+serving = []
+# Development / CI toolchain.
+dev = [
+    "pytest>=7.4",
+    "pytest-xdist>=3.5",
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+    "pre-commit>=3.7",
+    "build>=1.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/fade-kv/fade"
+Issues = "https://github.com/fade-kv/fade/issues"
+Changelog = "https://github.com/fade-kv/fade/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fade*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]  # assert False / manual-raise idioms in tests
+"experiments/*" = ["E402"]
+
+[tool.pyright]
+include = ["fade"]
+exclude = ["**/__pycache__", "**/.venv"]
+reportMissingImports = "warning"
+reportMissingTypeStubs = false
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "eval: quality evaluation tests (may download models; gated in CI)",
+    "cuda: tests that require a CUDA device",
+]
