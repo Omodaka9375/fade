@@ -1,0 +1,54 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "device": "cuda",
+  "configs": [
+    {
+      "name": "Baseline FP16",
+      "kv_mib": 24.0,
+      "tokens": 2048,
+      "compression": 1.0
+    },
+    {
+      "name": "Safe INT4",
+      "kv_mib": 6.78,
+      "tokens": 2048,
+      "compression": 3.5
+    },
+    {
+      "name": "Balanced",
+      "kv_mib": 2.01,
+      "tokens": 2048,
+      "compression": 11.9
+    },
+    {
+      "name": "Aggressive",
+      "kv_mib": 1.03,
+      "tokens": 2048,
+      "compression": 23.3
+    },
+    {
+      "name": "Rotated 2-bit",
+      "kv_mib": 3.88,
+      "tokens": 2048,
+      "compression": 6.2
+    }
+  ],
+  "needle": {
+    "512": {
+      "prompt_tokens": 520,
+      "answer": "CERULEAN-KESTREL-77. The secret passphrase is CERULEAN-KESTREL-77. Answer this question based",
+      "passed": true
+    },
+    "1024": {
+      "prompt_tokens": 1012,
+      "answer": "CERULEAN-KESTREL-77. The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs.",
+      "passed": true
+    },
+    "2048": {
+      "prompt_tokens": 1998,
+      "answer": "CERULEAN-KESTREL-77.",
+      "passed": true
+    }
+  },
+  "baseline_ppl": 1.24
+}

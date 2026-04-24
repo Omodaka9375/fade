@@ -198,12 +198,36 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 ## Results
 
-| Config | Model | KV cache | Compression |
-|--------|-------|----------|-------------|
-| INT4 symmetric | Qwen2.5-0.5B, 2K tok | 6.78 MiB | **3.5×** |
-| Rotated 4-bit | Qwen2.5-0.5B, 2K tok | 6.78 MiB | **3.5×** (better quality) |
-| Rotated 2-bit | Qwen2.5-0.5B, 2K tok | 3.88 MiB | **6.2×** |
-| Phase 2 H2O | Qwen2.5-3B, 595 tok | 6.3 MiB | **5×** (with eviction) |
+Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB.
+
+### Compression
+
+| Config | KV cache | Compression | Notes |
+|--------|----------|-------------|-------|
+| Baseline FP16 | 24.00 MiB | 1.0× | |
+| Safe (INT4, no eviction) | 6.78 MiB | **3.5×** | 100% greedy match |
+| Rotated 2-bit | 3.88 MiB | **6.2×** | Rotation + 2-bit packing |
+| Balanced (INT4 + eviction) | 2.01 MiB | **11.9×** | Position-based eviction |
+| Aggressive | 1.03 MiB | **23.3×** | Smaller budget |
+
+### Quality
+
+| Test | Result |
+|------|--------|
+| Needle @512 tokens | ✅ PASS |
+| Needle @1024 tokens | ✅ PASS |
+| Needle @2048 tokens | ✅ PASS |
+| Baseline PPL | 1.24 |
+
+### Performance (fused Triton kernel)
+
+| Path | Time | vs FP16 |
+|------|------|---------|
+| FP16 SDPA | 0.133 ms | 1.0× |
+| Dequant + SDPA (old) | 0.932 ms | 7.0× slower |
+| **Fused INT4 (new)** | **0.189 ms** | **1.4×** |
+
+Run benchmarks yourself: `python benchmarks/full_suite.py`, `python benchmarks/pareto.py --csv pareto.csv`
 
 ## Project layout
 
