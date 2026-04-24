@@ -147,7 +147,7 @@ attach_telemetry(cache, JsonlExporter("events.jsonl"))
 
 Debug dump: `cache.dump_debug("snapshot.json")`
 
-## PQ codebook (Phase 3)
+## PQ codebook
 
 ```python
 from fade.codebook import PQCodebook
