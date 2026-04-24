@@ -119,6 +119,8 @@ def reassign_tiers_learned(
     MLP; the top ``int4_budget`` survive as INT4, the rest are evicted.
     """
     for layer_idx in range(num_layers):
+        if not cache.is_managed(layer_idx):
+            continue
         S = int(cache.get_seq_length(layer_idx))
         if S == 0:
             continue

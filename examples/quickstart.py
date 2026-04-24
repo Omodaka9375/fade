@@ -55,7 +55,7 @@ def main():
     bal_mib = run_preset(model, tokenizer, "FadeConfig.balanced() (~5x)", FadeConfig.balanced())
     agg_mib = run_preset(model, tokenizer, "FadeConfig.aggressive(~7-8x)", FadeConfig.aggressive())
 
-    print(f"\n── Summary ──")
+    print("\n── Summary ──")
     print(f"Baseline:   {base_mib:.2f} MiB")
     print(f"Safe:       {safe_mib:.2f} MiB  ({100 * (1 - safe_mib / base_mib):.0f}% smaller)")
     print(f"Balanced:   {bal_mib:.2f} MiB  ({100 * (1 - bal_mib / base_mib):.0f}% smaller)")

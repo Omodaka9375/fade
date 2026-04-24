@@ -194,7 +194,26 @@ class TieredKVCache(DynamicCache):
         self._pq_codebook_k = None  # PQCodebook for K (set via set_codebooks)
         self._pq_codebook_v = None  # PQCodebook for V
         self._compiled_materialize = None  # populated by enable_compile()
+        self._skip_layers: set[int] = set()  # layers with plain passthrough (DeltaNet)
         self._layers: list[LayerState] = []
+
+    def set_skip_layers(self, layer_indices: set[int] | list[int]) -> None:
+        """Mark layers as passthrough (no tier management).
+
+        For hybrid models like Qwen 3.5/3.6, DeltaNet (linear attention)
+        layers don't produce a standard K/V cache. These layers store K/V
+        as plain FP16 and are excluded from tier assignment and re-RoPE.
+        """
+        self._skip_layers = set(layer_indices)
+
+    @property
+    def managed_layers(self) -> set[int]:
+        """Layer indices that participate in tier management."""
+        return {i for i in range(len(self._layers)) if i not in self._skip_layers}
+
+    def is_managed(self, layer_idx: int) -> bool:
+        """Whether a layer participates in tier management."""
+        return layer_idx not in self._skip_layers
 
     def enable_compile(self, **compile_kwargs) -> None:
         """Compile the materialize hot path with ``torch.compile``.

@@ -36,6 +36,8 @@ def reassign_tiers(
     cache after any eviction.
     """
     for layer_idx in range(num_layers):
+        if not cache.is_managed(layer_idx):
+            continue
         scores = tracker.scores(layer_idx)
         if scores is None:
             continue
@@ -71,6 +73,8 @@ def reassign_tiers_h2o(
     and decode are favoured.
     """
     for layer_idx in range(num_layers):
+        if not cache.is_managed(layer_idx):
+            continue
         S = int(cache.get_seq_length(layer_idx))
         if S == 0:
             continue
@@ -133,6 +137,8 @@ def reassign_tiers_by_position(
     token goes to INT4 and nothing is evicted.
     """
     for layer_idx in range(num_layers):
+        if not cache.is_managed(layer_idx):
+            continue
         S = int(cache.get_seq_length(layer_idx))
         if S == 0:
             continue

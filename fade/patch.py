@@ -133,19 +133,36 @@ def create_tiered_cache(
             ``recent_window``, ``int4_budget``, ``int2_budget``, ``batch_size``).
     """
     cfg = model.config
-    head_dim = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
-    scheme = extract_rope_scheme(cfg, head_dim=head_dim)
+    # Some multimodal models nest the text config.
+    text_cfg = getattr(cfg, "text_config", cfg)
+    head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
+    scheme = extract_rope_scheme(text_cfg, head_dim=head_dim)
     cache_kwargs: dict = {}
     if config is not None:
         cache_kwargs.update(config.to_cache_kwargs())
     cache_kwargs.update(kwargs)
-    return TieredKVCache(
+    cache = TieredKVCache(
         dtype=dtype,
         rope_theta=scheme.theta,
         head_dim=head_dim,
         rope_scheme=scheme,
         **cache_kwargs,
     )
+
+    # Detect hybrid attention models (e.g. Qwen 3.5/3.6 with DeltaNet).
+    # Layers marked as "linear_attention" use a recurrent state, not K/V
+    # cache — FADE skips tier management on those layers.
+    layer_types = getattr(text_cfg, "layer_types", None)
+    if layer_types is not None:
+        skip = {
+            i
+            for i, lt in enumerate(layer_types)
+            if lt not in ("full_attention", "sliding_attention")
+        }
+        if skip:
+            cache.set_skip_layers(skip)
+
+    return cache
 
 
 _WARNED_ABOUT_MISSING_ATTENTIONS: set[int] = set()
