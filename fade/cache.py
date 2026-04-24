@@ -19,7 +19,7 @@ import torch
 from torch import Tensor
 
 from fade._compat import DynamicCache
-from fade.backends import QuantBackend, get_backend
+from fade.backends import QuantBackend, SymmetricINT4Backend, get_backend
 from fade.quant import (
     DEFAULT_INT2_GROUP_SIZE,
     dequant_int4,
@@ -105,10 +105,14 @@ class LayerState:
     pq_pos: Tensor | None = None
     pq_k_deq: Tensor | None = None
     pq_v_deq: Tensor | None = None
+    # Backend-compressed storage (for non-INT4 backends like TurboQuant).
+    backend_k: dict | None = None
+    backend_v: dict | None = None
+    backend_pos: Tensor | None = None
 
     def total_seq_length(self) -> int:
         total = 0
-        for pos in (self.fp16_pos, self.int4_pos, self.int2_pos, self.pq_pos):
+        for pos in (self.fp16_pos, self.int4_pos, self.int2_pos, self.pq_pos, self.backend_pos):
             if pos is not None:
                 total += int(pos.shape[0])
         return total
@@ -685,6 +689,13 @@ class TieredKVCache(DynamicCache):
             mid_v.append(v4)
             mid_pos.append(state.int4_pos)
 
+        if state.backend_k is not None:
+            k_be = self._quant_backend.decompress_k(state.backend_k, dtype=self.dtype)
+            v_be = self._quant_backend.decompress_v(state.backend_v, dtype=self.dtype)
+            mid_k.append(k_be)
+            mid_v.append(v_be)
+            mid_pos.append(state.backend_pos)
+
         if state.int2_kq is not None:
             k2, v2 = self._get_int2_dequant(state)
             mid_k.append(k2)
@@ -866,20 +877,32 @@ class TieredKVCache(DynamicCache):
         if int4_idx.numel() > 0:
             k_sub = k_full.index_select(-2, int4_idx).contiguous()
             v_sub = v_full.index_select(-2, int4_idx).contiguous()
-            # Asymmetric K/V: K always uses its configured bits; V may differ.
-            state.int4_kq, state.int4_ks = quant_k_int4(k_sub)
-            if self.middle_v_bits == 4:
-                state.int4_vq, state.int4_vs = quant_v_int4(v_sub)
+            if isinstance(self._quant_backend, SymmetricINT4Backend):
+                # Legacy path: direct INT4 quant.
+                state.int4_kq, state.int4_ks = quant_k_int4(k_sub)
+                if self.middle_v_bits == 4:
+                    state.int4_vq, state.int4_vs = quant_v_int4(v_sub)
+                else:
+                    gs = DEFAULT_INT2_GROUP_SIZE
+                    v_padded, _ = pad_to_group(v_sub, gs)
+                    state.int4_vq, state.int4_vs = quant_v_int2(v_padded, group_size=gs)
+                state.int4_pos = pos_full.index_select(0, int4_idx).contiguous()
+                state.backend_k = state.backend_v = None
+                state.backend_pos = None
             else:
-                # V at INT2: store in the int4_vq/vs slots with INT2 quant.
-                gs = DEFAULT_INT2_GROUP_SIZE
-                v_padded, _ = pad_to_group(v_sub, gs)
-                state.int4_vq, state.int4_vs = quant_v_int2(v_padded, group_size=gs)
-            state.int4_pos = pos_full.index_select(0, int4_idx).contiguous()
+                # Pluggable backend (e.g. TurboQuant).
+                state.backend_k = self._quant_backend.compress_k(k_sub)
+                state.backend_v = self._quant_backend.compress_v(v_sub)
+                state.backend_pos = pos_full.index_select(0, int4_idx).contiguous()
+                state.int4_kq = state.int4_vq = None
+                state.int4_ks = state.int4_vs = None
+                state.int4_pos = None
         else:
             state.int4_kq = state.int4_vq = None
             state.int4_ks = state.int4_vs = None
             state.int4_pos = None
+            state.backend_k = state.backend_v = None
+            state.backend_pos = None
 
         int2_idx = (tiers == TIER_INT2).nonzero(as_tuple=False).squeeze(-1)
         if int2_idx.numel() > 0:
