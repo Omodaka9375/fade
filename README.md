@@ -36,6 +36,7 @@ When tokens are evicted, surviving K tensors are un-RoPE'd at old positions and 
 **From PyPI:**
 ```pwsh
 pip install fade-kv
+pip install fade-kv[server]  # adds fade-server CLI
 ```
 
 **From source (development):**
@@ -153,6 +154,20 @@ Two modes:
 from fade.kernels.fused_int4_attn import fused_int4_sdpa
 out = fused_int4_sdpa(q, k_packed, k_scale, v_packed, v_scale)
 ```
+
+## Inference server
+
+OpenAI-compatible API with automatic tier management:
+
+```pwsh
+fade-server --model Qwen/Qwen2.5-0.5B-Instruct --preset balanced --port 8000
+```
+
+```pwsh
+curl http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Hello!\"}],\"max_tokens\":100}"
+```
+
+Endpoints: `/v1/chat/completions` (greedy + sampling), `/v1/models`, `/health`.
 
 ## Checkpointing
 
