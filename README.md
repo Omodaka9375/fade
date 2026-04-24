@@ -6,7 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/fade-kv.svg)](https://pypi.org/project/fade-kv/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Omodaka9375/fade/blob/main/examples/quickstart.ipynb)
 
-**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache 3–5× with near-baseline quality.
+**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache **3–23×** depending on config, with near-baseline quality.
 
 ```python
 from fade import FadeConfig, create_tiered_cache
@@ -111,12 +111,12 @@ for step in range(max_tokens):
 
 ## Eviction policies
 
-| Policy | Quality | Speed | Needs attention? |
-|--------|---------|-------|-----------------|
-| `h2o` | Best | Normal | Yes (prefill only) |
-| `ema` | Good | Normal | Yes (decode only) |
-| `position` | Fair | Fast | No |
-| `learned` | Good* | Fast | No |
+| Policy    | Quality | Speed  | Needs attention?   |
+|-----------|---------|--------|--------------------|
+| `h2o`     | Best    | Normal | Yes (prefill only) |
+| `ema`     | Good    | Normal | Yes (decode only)  |
+| `position`| Fair    | Fast   | No                 |
+| `learned` | Good*   | Fast   | No                 |
 
 *Learned policy requires a trained checkpoint: `python scripts/train_eviction_mlp.py`
 
@@ -202,19 +202,19 @@ Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB.
 
 ### Compression
 
-| Config | KV cache | Compression | Notes |
-|--------|----------|-------------|-------|
-| Baseline FP16 | 24.00 MiB | 1.0× | |
-| Safe (INT4, no eviction) | 6.78 MiB | **3.5×** | 100% greedy match |
-| Rotated 2-bit | 3.88 MiB | **6.2×** | Rotation + 2-bit packing |
-| Balanced (INT4 + eviction) | 2.01 MiB | **11.9×** | Position-based eviction |
-| Aggressive | 1.03 MiB | **23.3×** | Smaller budget |
+| Config                     | KV cache  | Compression | Notes                    |
+|----------------------------|-----------|-------------|--------------------------|
+| Baseline FP16              | 24.00 MiB | 1.0×        |                          |
+| Safe (INT4, no eviction)   | 6.78 MiB  | **3.5×**    | 100% greedy match        |
+| Rotated 2-bit              | 3.88 MiB  | **6.2×**    | Rotation + 2-bit packing |
+| Balanced (INT4 + eviction) | 2.01 MiB  | **11.9×**   | Position-based eviction  |
+| Aggressive                 | 1.03 MiB  | **23.3×**   | Smaller budget           |
 
 ### Quality
 
-| Test | Result |
-|------|--------|
-| Needle @512 tokens | ✅ PASS |
+| Test                |  Result  |
+|---------------------|--------- |
+| Needle @512 tokens  | ✅ PASS |
 | Needle @1024 tokens | ✅ PASS |
 | Needle @2048 tokens | ✅ PASS |
 | Baseline PPL | 1.24 |
