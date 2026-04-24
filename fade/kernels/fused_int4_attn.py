@@ -79,7 +79,7 @@ if _HAS_TRITON:
         q_ptrs = (
             Q_ptr + pid_z * stride_qz + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qk
         )
-        q = tl.load(q_ptrs, mask=offs_m[:, None] < N_CTX_Q, other=0.0)
+        tl.load(q_ptrs, mask=offs_m[:, None] < N_CTX_Q, other=0.0)
 
         # Split Q into even/odd columns for the half-width dot trick.
         q_even = tl.load(
