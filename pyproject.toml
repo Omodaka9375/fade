@@ -38,6 +38,8 @@ cuda = ["accelerate>=0.34"]
 eval = ["datasets>=2.20", "accelerate>=0.34"]
 # Phase 3 product-quantization codebook trainer.
 codebook = ["scikit-learn>=1.4"]
+# TurboQuant rotation-based quantization backend (ICLR 2026).
+turbo = ["turboquant-kv>=1.0"]
 # Future serving adapters (vLLM/SGLang). Kept empty so the extra exists but
 # doesn't pull heavy deps into default installs.
 serving = []

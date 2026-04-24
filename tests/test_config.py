@@ -78,6 +78,7 @@ def test_to_cache_kwargs_roundtrip():
         "int2_budget": c.int2_budget,
         "middle_k_bits": c.middle_k_bits,
         "middle_v_bits": c.middle_v_bits,
+        "quant_backend": c.quant_backend,
     }
 
 

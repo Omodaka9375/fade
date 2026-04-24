@@ -19,6 +19,7 @@ import torch
 from torch import Tensor
 
 from fade._compat import DynamicCache
+from fade.backends import QuantBackend, get_backend
 from fade.quant import (
     DEFAULT_INT2_GROUP_SIZE,
     dequant_int4,
@@ -155,6 +156,7 @@ class TieredKVCache(DynamicCache):
         rope_scheme: RopeScheme | None = None,
         middle_k_bits: int = 4,
         middle_v_bits: int = 4,
+        quant_backend: str | QuantBackend = "int4",
     ) -> None:
         """Tiered KV cache.
 
@@ -192,6 +194,10 @@ class TieredKVCache(DynamicCache):
         self.max_dequant_age = DEFAULT_MAX_DEQUANT_AGE
         self.middle_k_bits = middle_k_bits
         self.middle_v_bits = middle_v_bits
+        if isinstance(quant_backend, str):
+            self._quant_backend: QuantBackend = get_backend(quant_backend, head_dim=head_dim or 64)
+        else:
+            self._quant_backend = quant_backend
         self._rope_scheme = rope_scheme  # resolved lazily in _ensure_rope_scheme
         self._pq_codebook_k = None  # PQCodebook for K (set via set_codebooks)
         self._pq_codebook_v = None  # PQCodebook for V

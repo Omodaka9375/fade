@@ -26,6 +26,7 @@ DEFAULT_PREFILL_TRACK_LIMIT: int = 1024
 EvictionPolicy = Literal["h2o", "ema", "position", "learned"]
 Phase = Literal["1a", "2"]
 QuantBits = Literal[4, 2]
+QuantBackendName = Literal["int4", "turbo"]
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class FadeConfig:
     int2_group_size: int = DEFAULT_INT2_GROUP_SIZE
     middle_k_bits: QuantBits = 4
     middle_v_bits: QuantBits = 4
+    quant_backend: QuantBackendName = "int4"
     _extras: dict = field(default_factory=dict, repr=False)
 
     # --- validation -------------------------------------------------------- #
@@ -151,6 +153,7 @@ class FadeConfig:
             "int2_budget": self.int2_budget,
             "middle_k_bits": self.middle_k_bits,
             "middle_v_bits": self.middle_v_bits,
+            "quant_backend": self.quant_backend,
         }
 
 
