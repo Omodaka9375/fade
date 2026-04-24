@@ -86,6 +86,72 @@ class SymmetricINT4Backend:
         return dequant_int4(compressed["packed"], compressed["scale"], dtype=dtype)
 
 
+# --- RotatedINT4 (TurboQuant-inspired, native) ----------------------------- #
+@dataclass
+class RotatedINT4Backend:
+    """Rotation-based INT4: random orthogonal rotation before quantization.
+
+    Inspired by TurboQuant (ICLR 2026). Spreads per-channel outliers across
+    all coordinates, making uniform INT4 quantization much more effective.
+    Storage: uint8 packed INT4 + float32 combined_scale per vector.
+    No external dependencies.
+    """
+
+    head_dim: int = 64
+    seed: int = 42
+    _R: Any = None  # cached rotation matrix
+
+    @property
+    def name(self) -> str:
+        return "rotated_int4"
+
+    def _get_R(self, device: torch.device | None = None) -> Tensor:
+        if self._R is None:
+            from fade.rotated_quant import _random_orthogonal
+
+            self._R = _random_orthogonal(self.head_dim, self.seed)
+        R = self._R
+        if device is not None:
+            R = R.to(device)
+        return R
+
+    def compress_k(self, k: Tensor) -> dict[str, Tensor]:
+        from fade.rotated_quant import rotated_quant_k
+
+        packed, scale = rotated_quant_k(k, self._get_R(k.device))
+        return {"packed": packed, "scale": scale}
+
+    def decompress_k(
+        self, compressed: dict[str, Tensor], dtype: torch.dtype = torch.float16
+    ) -> Tensor:
+        from fade.rotated_quant import rotated_dequant_k
+
+        return rotated_dequant_k(
+            compressed["packed"],
+            compressed["scale"],
+            self._get_R(compressed["packed"].device),
+            dtype=dtype,
+        )
+
+    def compress_v(self, v: Tensor) -> dict[str, Tensor]:
+        from fade.rotated_quant import rotated_quant_v
+
+        packed, scale = rotated_quant_v(v, self._get_R(v.device))
+        return {"packed": packed, "scale": scale}
+
+    def decompress_v(
+        self, compressed: dict[str, Tensor], dtype: torch.dtype = torch.float16
+    ) -> Tensor:
+        from fade.rotated_quant import rotated_dequant_v
+
+        return rotated_dequant_v(
+            compressed["packed"],
+            compressed["scale"],
+            self._get_R(compressed["packed"].device),
+            dtype=dtype,
+        )
+
+
 # --- TurboQuant ------------------------------------------------------------- #
 @dataclass
 class TurboQuantBackend:
@@ -171,6 +237,8 @@ class TurboQuantBackend:
 _BACKENDS: dict[str, type] = {
     "symmetric_int4": SymmetricINT4Backend,
     "int4": SymmetricINT4Backend,
+    "rotated_int4": RotatedINT4Backend,
+    "rotated": RotatedINT4Backend,
     "turbo": TurboQuantBackend,
     "turboquant": TurboQuantBackend,
 }
@@ -190,7 +258,7 @@ def get_backend(name: str = "int4", **kwargs) -> QuantBackend:
     # SymmetricINT4Backend takes no kwargs; filter them out.
     if cls is SymmetricINT4Backend:
         return cls()
-    return cls(**kwargs)
+    return cls(**{k: v for k, v in kwargs.items() if k in cls.__dataclass_fields__})
 
 
 __all__ = [
