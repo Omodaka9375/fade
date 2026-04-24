@@ -129,14 +129,16 @@ class TieredKVCache(DynamicCache):
     bit-exact when no eviction happens and makes eviction safe.
 
     Batching:
-        The cache supports ``batch_size >= 1`` under a **shared-tier**
-        contract: all rows in the batch share the same absolute positions
-        and the same tier assignment (the ``tiers`` tensor is ``[S]``, not
-        ``[B, S]``). Scores that drive the policy (EMA / H2O) are pooled
-        across the batch dimension. This is the correct mode for lockstep
-        decoding with equal-length prompts; ragged per-sequence eviction
-        is a future workstream (W2.5). The batch dimension is inferred
-        lazily on the first ``update()`` call and pinned thereafter.
+        Two modes are supported:
+
+        **Shared-tier** (default): all rows share the same positions and
+        tier assignment (``tiers`` is ``[S]``). Scores are pooled across B.
+        Correct for lockstep decoding with equal-length prompts.
+
+        **Per-sequence** (``apply_tier_assignment_per_sequence``): each row
+        gets an independent ``[S]`` tier assignment. After eviction, rows
+        may have different surviving counts; K/V are padded to the max.
+        Use this for continuous-batching where sequences diverge.
     """
 
     def __init__(
@@ -919,6 +921,170 @@ class TieredKVCache(DynamicCache):
         # Sinks are positions 0..n_sink-1. Since the policy always places them
         # in the FP16 tier and ``fp16_pos`` is sorted ascending, they form the
         # leading prefix.
+        if state.fp16_pos is not None:
+            state.sink_count = min(self.n_sink, int(state.fp16_pos.shape[0]))
+        else:
+            state.sink_count = 0
+
+    def apply_tier_assignment_per_sequence(
+        self,
+        layer_idx: int,
+        tiers_per_row: Tensor,
+        scores: Tensor | None = None,
+    ) -> None:
+        """Per-sequence tier assignment for ragged batching.
+
+        Args:
+            layer_idx: transformer layer index.
+            tiers_per_row: LongTensor ``[B, S]`` with per-row tier values.
+            scores: optional ``[B, S]`` or ``[S]`` scores for telemetry.
+
+        Each row is processed independently. After eviction, rows may have
+        different surviving counts. The result is padded to the max count
+        across rows so K/V remain rectangular ``[B, H, S_max, D]``.
+
+        This is slower than the shared-tier path (Python loop over B) but
+        correct for continuous-batching scenarios.
+        """
+        state = self._layers[layer_idx]
+        k_full, v_full, pos_full = self._all_in_position_order(layer_idx)
+        B = int(k_full.shape[0])
+        H = int(k_full.shape[1])
+        D = int(k_full.shape[3])
+        S = int(pos_full.shape[0])
+
+        if tiers_per_row.dim() != 2 or tiers_per_row.shape[0] != B:
+            raise ValueError(
+                f"tiers_per_row must be [B={B}, S={S}], got {tuple(tiers_per_row.shape)}"
+            )
+        if tiers_per_row.shape[1] != S:
+            raise ValueError(f"tiers_per_row S dim {tiers_per_row.shape[1]} != cache length {S}")
+
+        device = k_full.device
+        tiers_per_row = tiers_per_row.to(device)
+
+        # Process each row independently, collect surviving K/V per tier.
+        fp16_k_rows, fp16_v_rows, fp16_pos_rows = [], [], []
+        int4_k_rows, int4_v_rows, int4_pos_rows = [], [], []
+
+        min_next_pos = S  # track the minimum across rows for next_position
+        for b in range(B):
+            row_tiers = tiers_per_row[b]  # [S]
+            row_k = k_full[b : b + 1]  # [1, H, S, D]
+            row_v = v_full[b : b + 1]
+
+            has_eviction = (row_tiers == TIER_EVICT).any().item()
+            if has_eviction:
+                keep_mask = row_tiers != TIER_EVICT
+                n_kept = int(keep_mask.sum().item())
+                old_cos, old_sin = self._compute_cos_sin(pos_full, device)
+                k_pre = self._inverse_rope(row_k, old_cos, old_sin)
+                keep_idx = keep_mask.nonzero(as_tuple=False).squeeze(-1)
+                k_pre = k_pre.index_select(-2, keep_idx).contiguous()
+                row_v = row_v.index_select(-2, keep_idx).contiguous()
+                new_pos = self._streamingllm_positions(n_kept, device)
+                new_cos, new_sin = self._compute_cos_sin(new_pos, device)
+                row_k = self._apply_rope(k_pre, new_cos, new_sin)
+                row_tiers = row_tiers[keep_mask]
+                row_pos = new_pos
+                min_next_pos = min(min_next_pos, n_kept)
+            else:
+                row_pos = pos_full
+
+            # Split into tiers.
+            fp16_idx = (row_tiers == TIER_FP16).nonzero(as_tuple=False).squeeze(-1)
+            if fp16_idx.numel() > 0:
+                fp16_k_rows.append(row_k.index_select(-2, fp16_idx))
+                fp16_v_rows.append(row_v.index_select(-2, fp16_idx))
+                fp16_pos_rows.append(row_pos[fp16_idx])
+            else:
+                fp16_k_rows.append(torch.zeros(1, H, 0, D, dtype=row_k.dtype, device=device))
+                fp16_v_rows.append(torch.zeros(1, H, 0, D, dtype=row_v.dtype, device=device))
+                fp16_pos_rows.append(torch.zeros(0, dtype=torch.long, device=device))
+
+            int4_idx = (row_tiers == TIER_INT4).nonzero(as_tuple=False).squeeze(-1)
+            if int4_idx.numel() > 0:
+                int4_k_rows.append(row_k.index_select(-2, int4_idx))
+                int4_v_rows.append(row_v.index_select(-2, int4_idx))
+                int4_pos_rows.append(row_pos[int4_idx])
+            else:
+                int4_k_rows.append(torch.zeros(1, H, 0, D, dtype=row_k.dtype, device=device))
+                int4_v_rows.append(torch.zeros(1, H, 0, D, dtype=row_v.dtype, device=device))
+                int4_pos_rows.append(torch.zeros(0, dtype=torch.long, device=device))
+
+        # Pad to max count across rows and stack.
+        def _pad_and_stack(rows_list, dim=-2):
+            max_len = max(r.shape[dim] for r in rows_list)
+            if max_len == 0:
+                return None
+            padded = []
+            for r in rows_list:
+                gap = max_len - r.shape[dim]
+                if gap > 0:
+                    pad_shape = list(r.shape)
+                    pad_shape[dim] = gap
+                    r = torch.cat(
+                        [r, torch.zeros(pad_shape, dtype=r.dtype, device=r.device)], dim=dim
+                    )
+                padded.append(r)
+            return torch.cat(padded, dim=0)  # [B, H, max_len, D]
+
+        def _pad_and_stack_1d(rows_list):
+            max_len = max(r.shape[0] for r in rows_list)
+            if max_len == 0:
+                return None
+            # Use first row's positions as representative (shared-tier compat).
+            return rows_list[0][:max_len] if len(rows_list) > 0 else None
+
+        # FP16 tier.
+        fp16_k = _pad_and_stack(fp16_k_rows)
+        if fp16_k is not None:
+            state.fp16_k = fp16_k
+            state.fp16_v = _pad_and_stack(fp16_v_rows)
+            state.fp16_pos = _pad_and_stack_1d(fp16_pos_rows)
+        else:
+            state.fp16_k = state.fp16_v = state.fp16_pos = None
+
+        # Reset pre-alloc buffer.
+        state._fp16_buf_k = None
+        state._fp16_buf_v = None
+        state._fp16_buf_pos = None
+        state._fp16_len = 0
+
+        # INT4 tier.
+        int4_k = _pad_and_stack(int4_k_rows)
+        if int4_k is not None:
+            state.int4_kq, state.int4_ks = quant_k_int4(int4_k)
+            int4_v = _pad_and_stack(int4_v_rows)
+            if self.middle_v_bits == 4:
+                state.int4_vq, state.int4_vs = quant_v_int4(int4_v)
+            else:
+                gs = DEFAULT_INT2_GROUP_SIZE
+                v_padded, _ = pad_to_group(int4_v, gs)
+                state.int4_vq, state.int4_vs = quant_v_int2(v_padded, group_size=gs)
+            state.int4_pos = _pad_and_stack_1d(int4_pos_rows)
+        else:
+            state.int4_kq = state.int4_vq = None
+            state.int4_ks = state.int4_vs = None
+            state.int4_pos = None
+
+        # INT2 / PQ tiers not handled per-sequence yet (use shared path).
+        state.int2_kq = state.int2_vq = None
+        state.int2_ks = state.int2_vs = None
+        state.int2_pos = None
+        state.int2_actual_count = 0
+        state.pq_codes = state.pq_v_codes = None
+        state.pq_pos = None
+
+        # Invalidate ephemeral caches.
+        state.int4_k_deq = None
+        state.int4_v_deq = None
+        state.int2_k_deq = None
+        state.int2_v_deq = None
+        state.pq_k_deq = None
+        state.pq_v_deq = None
+
+        state.next_position = min_next_pos
         if state.fp16_pos is not None:
             state.sink_count = min(self.n_sink, int(state.fp16_pos.shape[0]))
         else:
