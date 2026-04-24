@@ -1,5 +1,9 @@
 # FADE
 
+[![CI](https://github.com/Omodaka9375/fade/actions/workflows/ci.yml/badge.svg)](https://github.com/Omodaka9375/fade/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)](https://python.org)
+
 **Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache 3–5× with near-baseline quality.
 
 ```python

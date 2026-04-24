@@ -45,6 +45,7 @@ TIER_FP16: int = 0
 TIER_INT4: int = 1
 TIER_INT2: int = 2
 TIER_EVICT: int = 3
+TIER_PQ: int = 4
 
 
 @dataclass
@@ -97,10 +98,16 @@ class LayerState:
     _fp16_len: int = 0  # number of valid entries in the buffer
     # Dequant cache age: incremented on every update; used for age-based eviction.
     _dequant_age: int = 0
+    # PQ tier (Phase 3)
+    pq_codes: Tensor | None = None  # [..., n_sub] uint8 codes for K
+    pq_v_codes: Tensor | None = None  # [..., n_sub] uint8 codes for V
+    pq_pos: Tensor | None = None
+    pq_k_deq: Tensor | None = None
+    pq_v_deq: Tensor | None = None
 
     def total_seq_length(self) -> int:
         total = 0
-        for pos in (self.fp16_pos, self.int4_pos, self.int2_pos):
+        for pos in (self.fp16_pos, self.int4_pos, self.int2_pos, self.pq_pos):
             if pos is not None:
                 total += int(pos.shape[0])
         return total
@@ -184,7 +191,19 @@ class TieredKVCache(DynamicCache):
         self.middle_k_bits = middle_k_bits
         self.middle_v_bits = middle_v_bits
         self._rope_scheme = rope_scheme  # resolved lazily in _ensure_rope_scheme
+        self._pq_codebook_k = None  # PQCodebook for K (set via set_codebooks)
+        self._pq_codebook_v = None  # PQCodebook for V
         self._layers: list[LayerState] = []
+
+    def set_codebooks(self, k_codebook, v_codebook=None) -> None:
+        """Attach trained PQ codebooks for the TIER_PQ path.
+
+        Args:
+            k_codebook: a ``PQCodebook`` for K vectors.
+            v_codebook: a ``PQCodebook`` for V vectors. If None, reuses ``k_codebook``.
+        """
+        self._pq_codebook_k = k_codebook
+        self._pq_codebook_v = v_codebook or k_codebook
 
     def _ensure_rope_scheme(self) -> RopeScheme:
         """Lazily build a RopeScheme when head_dim is first known."""
@@ -624,6 +643,12 @@ class TieredKVCache(DynamicCache):
             mid_v.append(v2)
             mid_pos.append(state.int2_pos)
 
+        if state.pq_codes is not None:
+            kpq, vpq = self._get_pq_dequant(state)
+            mid_k.append(kpq)
+            mid_v.append(vpq)
+            mid_pos.append(state.pq_pos)
+
         if mid_k:
             if len(mid_k) == 1:
                 parts_k.append(mid_k[0])
@@ -684,6 +709,23 @@ class TieredKVCache(DynamicCache):
             state.int4_k_deq = k_deq
             state.int4_v_deq = v_deq
             state._dequant_age = 0  # reset age on fresh population
+        return k_deq, v_deq
+
+    def _get_pq_dequant(self, state: LayerState) -> tuple[Tensor, Tensor]:
+        """Return (K, V) decoded from PQ codes."""
+        if self.cache_dequant and state.pq_k_deq is not None:
+            return state.pq_k_deq, state.pq_v_deq
+        if self._pq_codebook_k is None:
+            raise RuntimeError(
+                "TIER_PQ tokens exist but no codebook is attached. "
+                "Call cache.set_codebooks(k_cb, v_cb) before tier assignment."
+            )
+        # codes: [B, H, S_pq, n_sub] -> decode to [B, H, S_pq, head_dim]
+        k_deq = self._pq_codebook_k.decode(state.pq_codes).to(self.dtype)
+        v_deq = self._pq_codebook_v.decode(state.pq_v_codes).to(self.dtype)
+        if self.cache_dequant:
+            state.pq_k_deq = k_deq
+            state.pq_v_deq = v_deq
         return k_deq, v_deq
 
     def _get_int2_dequant(self, state: LayerState) -> tuple[Tensor, Tensor]:
@@ -810,11 +852,29 @@ class TieredKVCache(DynamicCache):
             state.int2_pos = None
             state.int2_actual_count = 0
 
+        pq_idx = (tiers == TIER_PQ).nonzero(as_tuple=False).squeeze(-1)
+        if pq_idx.numel() > 0:
+            if self._pq_codebook_k is None:
+                raise RuntimeError(
+                    "TIER_PQ assigned but no codebook attached. "
+                    "Call cache.set_codebooks(k_cb, v_cb) first."
+                )
+            k_sub = k_full.index_select(-2, pq_idx).contiguous()
+            v_sub = v_full.index_select(-2, pq_idx).contiguous()
+            state.pq_codes = self._pq_codebook_k.encode(k_sub)
+            state.pq_v_codes = self._pq_codebook_v.encode(v_sub)
+            state.pq_pos = pos_full.index_select(0, pq_idx).contiguous()
+        else:
+            state.pq_codes = state.pq_v_codes = None
+            state.pq_pos = None
+
         # Invalidate ephemeral caches; ``_materialize`` rebuilds them lazily.
         state.int4_k_deq = None
         state.int4_v_deq = None
         state.int2_k_deq = None
         state.int2_v_deq = None
+        state.pq_k_deq = None
+        state.pq_v_deq = None
 
         # Sinks are positions 0..n_sink-1. Since the policy always places them
         # in the FP16 tier and ``fp16_pos`` is sorted ascending, they form the
