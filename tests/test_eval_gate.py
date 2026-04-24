@@ -13,6 +13,7 @@ For real quality validation, run on a trained model:
 The fast tests here run in every CI build; the slow ``@pytest.mark.eval``
 tests run on nightly CI only.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -87,8 +88,13 @@ def test_perplexity_pipeline():
     model, tokenizer, _ = _tiny_model()
     text = "The quick brown fox jumps over the lazy dog. " * 10
     result = run_perplexity_test(
-        model, tokenizer, text=text, device="cpu",
-        max_length=64, stride=32, threshold=1e6,
+        model,
+        tokenizer,
+        text=text,
+        device="cpu",
+        max_length=64,
+        stride=32,
+        threshold=1e6,
     )
     assert "ppl" in result
     assert result["ppl"] > 0
@@ -115,13 +121,20 @@ def test_tiered_cache_decode_does_not_diverge_immediately():
 
     # Tiered (no eviction).
     tier_cache = create_tiered_cache(
-        model, dtype=DTYPE, n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     with torch.no_grad():
         tier_out = model(ids, past_key_values=tier_cache, use_cache=True)
     tier_tok = tier_out.logits[:, -1:, :].argmax(dim=-1)
 
-    assert torch.equal(base_tok, tier_tok), "First decode token diverged — no eviction should be exact"
+    assert torch.equal(base_tok, tier_tok), (
+        "First decode token diverged — no eviction should be exact"
+    )
 
 
 def test_tier_reassignment_pipeline():
@@ -131,7 +144,12 @@ def test_tier_reassignment_pipeline():
     num_layers = cfg.num_hidden_layers
 
     cache = create_tiered_cache(
-        model, dtype=DTYPE, n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     tracker = AttentionTracker(num_layers=num_layers)
     out = forward_with_tracking(model, ids, cache, tracker=tracker)

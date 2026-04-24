@@ -10,6 +10,7 @@ Example:
 
     cache = create_tiered_cache(model, config=FadeConfig.balanced())
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -88,13 +89,9 @@ class FadeConfig:
                 f"got int4_budget={self.int4_budget}"
             )
         if self.phase == "2" and self.int4_budget is None and self.int2_budget == 0:
-            raise ValueError(
-                "phase='2' requires at least one of int4_budget / int2_budget > 0"
-            )
+            raise ValueError("phase='2' requires at least one of int4_budget / int2_budget > 0")
         if self.eviction_policy not in ("h2o", "ema", "position", "learned"):
-            raise ValueError(
-                f"unknown eviction_policy: {self.eviction_policy!r}"
-            )
+            raise ValueError(f"unknown eviction_policy: {self.eviction_policy!r}")
         if self.middle_k_bits not in (4, 2):
             raise ValueError(f"middle_k_bits must be 4 or 2, got {self.middle_k_bits}")
         if self.middle_v_bits not in (4, 2):

@@ -11,6 +11,7 @@ Usage:
     # ... run inference ...
     exporter.close()
 """
+
 from __future__ import annotations
 
 import json

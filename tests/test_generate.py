@@ -4,6 +4,7 @@ Verify that ``TieredKVCache`` works as a drop-in ``past_key_values`` for
 the standard HuggingFace generate loop — greedy, sampling, and beam search.
 Uses a tiny random-init Qwen2 model so no downloads are required.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -37,8 +38,12 @@ def _tiny_model():
 
 def _make_cache(model):
     return create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
 
 
@@ -56,8 +61,11 @@ def test_generate_sampling():
     cache = _make_cache(model)
     ids = torch.randint(0, cfg.vocab_size, (1, 8))
     out = model.generate(
-        ids, past_key_values=cache,
-        max_new_tokens=6, do_sample=True, temperature=0.8,
+        ids,
+        past_key_values=cache,
+        max_new_tokens=6,
+        do_sample=True,
+        temperature=0.8,
     )
     assert out.shape[0] == 1
     assert out.shape[1] >= 8 + 1
@@ -68,8 +76,10 @@ def test_generate_beam_search():
     cache = _make_cache(model)
     ids = torch.randint(0, cfg.vocab_size, (1, 8))
     out = model.generate(
-        ids, past_key_values=cache,
-        max_new_tokens=6, num_beams=2,
+        ids,
+        past_key_values=cache,
+        max_new_tokens=6,
+        num_beams=2,
     )
     assert out.shape[0] == 1
     assert out.shape[1] >= 8 + 1
@@ -83,8 +93,10 @@ def test_generate_greedy_matches_manual_loop():
     # Via generate.
     cache_gen = _make_cache(model)
     gen_out = model.generate(
-        ids, past_key_values=cache_gen,
-        max_new_tokens=4, do_sample=False,
+        ids,
+        past_key_values=cache_gen,
+        max_new_tokens=4,
+        do_sample=False,
     )
 
     # Manual greedy loop.

@@ -1,4 +1,5 @@
 """Unit tests for ``fade.rope`` scheme abstraction."""
+
 from __future__ import annotations
 
 import types
@@ -55,8 +56,11 @@ def test_ntk_aware_changes_base_theta():
 def test_llama3_inv_freq_three_bands():
     """Llama3 should produce frequencies in three bands: keep / blend / scale."""
     l3 = Llama3(
-        theta=THETA, head_dim=HEAD_DIM, factor=4.0,
-        low_freq_factor=1.0, high_freq_factor=4.0,
+        theta=THETA,
+        head_dim=HEAD_DIM,
+        factor=4.0,
+        low_freq_factor=1.0,
+        high_freq_factor=4.0,
         original_max_position_embeddings=8192,
     )
     base = Vanilla(theta=THETA, head_dim=HEAD_DIM)
@@ -109,7 +113,9 @@ def test_extract_no_scaling():
 
 def test_extract_linear_scaling():
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"type": "linear", "factor": 4.0},
     )
     scheme = extract_rope_scheme(cfg)
@@ -119,10 +125,14 @@ def test_extract_linear_scaling():
 
 def test_extract_llama3():
     cfg = _mock_cfg(
-        rope_theta=500000.0, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=500000.0,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={
-            "type": "llama3", "factor": 8.0,
-            "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+            "type": "llama3",
+            "factor": 8.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
             "original_max_position_embeddings": 8192,
         },
     )
@@ -134,7 +144,9 @@ def test_extract_llama3():
 
 def test_extract_dynamic_ntk():
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"type": "dynamic", "factor": 2.0},
     )
     scheme = extract_rope_scheme(cfg)
@@ -143,10 +155,14 @@ def test_extract_dynamic_ntk():
 
 def test_extract_yarn():
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={
-            "type": "yarn", "factor": 4.0,
-            "beta_fast": 16.0, "beta_slow": 2.0,
+            "type": "yarn",
+            "factor": 4.0,
+            "beta_fast": 16.0,
+            "beta_slow": 2.0,
             "original_max_position_embeddings": 4096,
         },
     )
@@ -165,7 +181,9 @@ def test_extract_alibi():
 def test_extract_default_type_is_vanilla():
     """Transformers 5.x emits rope_scaling={'type': 'default'}."""
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"type": "default"},
     )
     scheme = extract_rope_scheme(cfg)
@@ -174,7 +192,9 @@ def test_extract_default_type_is_vanilla():
 
 def test_extract_unknown_type_warns():
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"type": "exotic_new_type", "factor": 3.0},
     )
     with warnings.catch_warnings(record=True) as caught:
@@ -187,7 +207,9 @@ def test_extract_unknown_type_warns():
 def test_extract_rope_type_key():
     """Some configs use 'rope_type' instead of 'type'."""
     cfg = _mock_cfg(
-        rope_theta=THETA, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=THETA,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"rope_type": "ntk", "factor": 2.0},
     )
     scheme = extract_rope_scheme(cfg)
@@ -240,18 +262,32 @@ def test_proportional_cos_sin_identity_on_non_rotated():
     half = HEAD_DIM // 2
     rope_angles = prop.rotary_dim // 2  # 8
     # First half non-rotated: indices rope_angles..half-1.
-    assert torch.allclose(cos[:, :, :, rope_angles:half], torch.ones_like(cos[:, :, :, rope_angles:half]), atol=1e-5)
-    assert torch.allclose(sin[:, :, :, rope_angles:half], torch.zeros_like(sin[:, :, :, rope_angles:half]), atol=1e-5)
+    assert torch.allclose(
+        cos[:, :, :, rope_angles:half], torch.ones_like(cos[:, :, :, rope_angles:half]), atol=1e-5
+    )
+    assert torch.allclose(
+        sin[:, :, :, rope_angles:half], torch.zeros_like(sin[:, :, :, rope_angles:half]), atol=1e-5
+    )
     # Second half non-rotated: indices half+rope_angles..head_dim-1.
-    assert torch.allclose(cos[:, :, :, half + rope_angles:], torch.ones_like(cos[:, :, :, half + rope_angles:]), atol=1e-5)
-    assert torch.allclose(sin[:, :, :, half + rope_angles:], torch.zeros_like(sin[:, :, :, half + rope_angles:]), atol=1e-5)
+    assert torch.allclose(
+        cos[:, :, :, half + rope_angles :],
+        torch.ones_like(cos[:, :, :, half + rope_angles :]),
+        atol=1e-5,
+    )
+    assert torch.allclose(
+        sin[:, :, :, half + rope_angles :],
+        torch.zeros_like(sin[:, :, :, half + rope_angles :]),
+        atol=1e-5,
+    )
 
 
 def test_extract_proportional_scheme():
     from fade.rope import Proportional
 
     cfg = _mock_cfg(
-        rope_theta=1_000_000.0, hidden_size=HEAD_DIM, num_attention_heads=1,
+        rope_theta=1_000_000.0,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
         rope_scaling={"type": "proportional", "partial_rotary_factor": 0.25},
     )
     scheme = extract_rope_scheme(cfg)
@@ -265,7 +301,9 @@ def test_extract_gemma4_per_layer_rope_parameters():
     from fade.rope import Proportional, Vanilla, extract_rope_schemes_per_layer
 
     cfg = _mock_cfg(
-        hidden_size=HEAD_DIM, num_attention_heads=1, head_dim=HEAD_DIM,
+        hidden_size=HEAD_DIM,
+        num_attention_heads=1,
+        head_dim=HEAD_DIM,
         rope_parameters={
             "sliding_attention": {"rope_type": "default", "rope_theta": 10_000.0},
             "full_attention": {

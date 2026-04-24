@@ -6,6 +6,7 @@ the needle. Returns whether the answer contains the needle string.
 
 Production evals should use RULER or lm-eval-harness; this is a fast local check.
 """
+
 from __future__ import annotations
 
 import torch
@@ -58,7 +59,7 @@ def run_needle(
         do_sample=False,
         pad_token_id=tokenizer.eos_token_id,
     )
-    answer = tokenizer.decode(out[0, enc.input_ids.shape[1]:], skip_special_tokens=True)
+    answer = tokenizer.decode(out[0, enc.input_ids.shape[1] :], skip_special_tokens=True)
     passed = "CERULEAN-KESTREL-77" in answer or needle.split()[-1].rstrip(".") in answer
     return {
         "prompt_tokens": int(enc.input_ids.shape[1]),

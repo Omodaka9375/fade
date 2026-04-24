@@ -22,6 +22,7 @@ Attention-impl guide:
       attention weights. Safe for the ``position`` and ``ema``-decode
       policies.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -94,9 +95,7 @@ def _installed_attn_impl(model) -> str | None:
         return None
     # 5.x stores it as config._attn_implementation; 4.x may store it as
     # config.attn_implementation. Try both.
-    return getattr(cfg, "_attn_implementation", None) or getattr(
-        cfg, "attn_implementation", None
-    )
+    return getattr(cfg, "_attn_implementation", None) or getattr(cfg, "attn_implementation", None)
 
 
 def _extract_rope_theta(cfg) -> float:

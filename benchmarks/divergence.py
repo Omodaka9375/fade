@@ -8,6 +8,7 @@ Usage:
     python benchmarks/divergence.py              # built-in prompt, Qwen-0.5B
     python benchmarks/divergence.py --csv out.csv
 """
+
 from __future__ import annotations
 
 import argparse
@@ -71,18 +72,29 @@ def main() -> None:
     # --- Baseline ---
     t0 = time.perf_counter()
     baseline_cache = DynamicCache()
-    baseline_tokens = _greedy_decode(model, tokenizer, enc.input_ids, baseline_cache, args.max_tokens)
+    baseline_tokens = _greedy_decode(
+        model, tokenizer, enc.input_ids, baseline_cache, args.max_tokens
+    )
     t_base = time.perf_counter() - t0
 
     # --- Tiered ---
     t0 = time.perf_counter()
     tiered_cache = create_tiered_cache(
-        model, dtype=DTYPE, n_sink=N_SINK, recent_window=RECENT_WINDOW,
-        int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=N_SINK,
+        recent_window=RECENT_WINDOW,
+        int4_budget=None,
+        int2_budget=0,
     )
     tracker = AttentionTracker(num_layers=num_layers)
     tiered_tokens = _greedy_decode(
-        model, tokenizer, enc.input_ids, tiered_cache, args.max_tokens, tracker=tracker,
+        model,
+        tokenizer,
+        enc.input_ids,
+        tiered_cache,
+        args.max_tokens,
+        tracker=tracker,
     )
     t_tier = time.perf_counter() - t0
 
@@ -107,7 +119,9 @@ def main() -> None:
             w = csv.writer(f)
             w.writerow(["position", "baseline_tok", "tiered_tok", "match", "cumulative_match"])
             for i in range(min_len):
-                w.writerow([i, baseline_tokens[i], tiered_tokens[i], matches[i], f"{cum_match[i]:.4f}"])
+                w.writerow(
+                    [i, baseline_tokens[i], tiered_tokens[i], matches[i], f"{cum_match[i]:.4f}"]
+                )
         print(f"\nCSV written to {args.csv}")
 
 

@@ -12,6 +12,7 @@ Test coverage:
       ``AssertionError``) when a tracker is supplied but attentions are
       dropped.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -69,8 +70,12 @@ def test_position_policy_works_under_sdpa():
     num_layers = cfg.num_hidden_layers
 
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=4, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=4,
+        int2_budget=0,
     )
     prompt_ids = torch.randint(0, cfg.vocab_size, (1, 20))
 
@@ -96,8 +101,12 @@ def test_tracker_under_sdpa_warns_once_and_degrades_gracefully():
     """Supplying a tracker under SDPA must warn, not crash."""
     model, cfg = _tiny_model("sdpa")
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     tracker = AttentionTracker(num_layers=cfg.num_hidden_layers)
     prompt_ids = torch.randint(0, cfg.vocab_size, (1, 8))
@@ -122,8 +131,12 @@ def test_eager_path_still_feeds_tracker():
     """Regression: when eager is actually used, the tracker gets observations."""
     model, cfg = _tiny_model("eager")
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     tracker = AttentionTracker(num_layers=cfg.num_hidden_layers)
     prompt_ids = torch.randint(0, cfg.vocab_size, (1, 8))

@@ -7,6 +7,7 @@ Usage:
     python scripts/train_eviction_mlp.py
     python scripts/train_eviction_mlp.py --model Qwen/Qwen2.5-0.5B-Instruct --epochs 20
 """
+
 from __future__ import annotations
 
 import argparse

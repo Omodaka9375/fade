@@ -2,6 +2,7 @@
 
 These run offline and lock in the contract that the rest of the package depends on.
 """
+
 from __future__ import annotations
 
 from fade import _compat

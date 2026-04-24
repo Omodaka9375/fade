@@ -7,6 +7,7 @@ Usage:
     python benchmarks/tps.py
     python benchmarks/tps.py --model Qwen/Qwen2.5-3B-Instruct --tokens 256
 """
+
 from __future__ import annotations
 
 import argparse
@@ -67,8 +68,12 @@ def main() -> None:
 
     # --- Tiered (no eviction, Phase 1-A) ---
     cache_tier = create_tiered_cache(
-        model, dtype=DTYPE, n_sink=4, recent_window=64,
-        int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=4,
+        recent_window=64,
+        int4_budget=None,
+        int2_budget=0,
     )
     t_tier = _decode_loop(model, enc.input_ids, cache_tier, args.tokens)
     tps_tier = args.tokens / t_tier

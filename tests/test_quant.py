@@ -3,6 +3,7 @@
 We check that dequant(quant(x)) stays within a loose tolerance of x, and that
 shapes of the scale tensors match the documented contracts.
 """
+
 from __future__ import annotations
 
 import torch

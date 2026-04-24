@@ -5,6 +5,7 @@ Usage (once per forward pass):
 
 Then feed ``tracker.scores(layer_idx)`` into the tier policy.
 """
+
 from __future__ import annotations
 
 import torch

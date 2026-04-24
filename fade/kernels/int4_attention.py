@@ -14,6 +14,7 @@ Usage:
     from fade.kernels.int4_attention import int4_sdpa
     out = int4_sdpa(q, k_packed, k_scale, v_packed, v_scale)
 """
+
 from __future__ import annotations
 
 import torch

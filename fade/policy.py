@@ -12,6 +12,7 @@ Three eviction strategies, all sharing the same ``_assign_one_layer`` core:
 
 All three honour ``n_sink``, ``recent_window``, ``int4_budget``, ``int2_budget``.
 """
+
 from __future__ import annotations
 
 import torch
@@ -86,8 +87,9 @@ def reassign_tiers_h2o(
 
         # Pad / trim to current cache length (decode tokens added after prefill).
         if prefill_mass.shape[0] < S:
-            pad = torch.zeros(S - prefill_mass.shape[0], dtype=prefill_mass.dtype,
-                              device=prefill_mass.device)
+            pad = torch.zeros(
+                S - prefill_mass.shape[0], dtype=prefill_mass.dtype, device=prefill_mass.device
+            )
             prefill_mass = torch.cat([prefill_mass, pad])
         elif prefill_mass.shape[0] > S:
             prefill_mass = prefill_mass[:S]

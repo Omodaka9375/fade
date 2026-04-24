@@ -8,6 +8,7 @@ Design choices (from KIVI and follow-ups):
     - INT2 still uses group-wise scales along the sequence axis and is not
       yet bit-packed (Phase 2 work).
 """
+
 from __future__ import annotations
 
 import torch
@@ -117,9 +118,7 @@ def dequant(q: Tensor, scale: Tensor, dtype: torch.dtype = torch.float16) -> Ten
     return q.to(dtype) * scale.to(dtype)
 
 
-def dequant_int4(
-    packed: Tensor, scale: Tensor, dtype: torch.dtype = torch.float16
-) -> Tensor:
+def dequant_int4(packed: Tensor, scale: Tensor, dtype: torch.dtype = torch.float16) -> Tensor:
     """Unpack a bit-packed INT4 tensor and dequantize to ``dtype``."""
     q = _unpack_int4_last_dim(packed)
     return q.to(dtype) * scale.to(dtype)
@@ -156,9 +155,7 @@ def dequant_k_int2(
     """Dequantize the grouped INT2 K tensor back to ``dtype``."""
     B, H, S, D = q.shape
     G = S // group_size
-    scale_full = (
-        scale.unsqueeze(-2).expand(B, H, G, group_size, D).reshape(B, H, S, D)
-    )
+    scale_full = scale.unsqueeze(-2).expand(B, H, G, group_size, D).reshape(B, H, S, D)
     return q.to(dtype) * scale_full.to(dtype)
 
 
@@ -171,9 +168,7 @@ def dequant_v_int2(
     """Dequantize the grouped INT2 V tensor back to ``dtype``."""
     B, H, S, D = q.shape
     G = S // group_size
-    scale_full = (
-        scale.unsqueeze(-2).expand(B, H, G, group_size, D).reshape(B, H, S, D)
-    )
+    scale_full = scale.unsqueeze(-2).expand(B, H, G, group_size, D).reshape(B, H, S, D)
     return q.to(dtype) * scale_full.to(dtype)
 
 
@@ -183,7 +178,5 @@ def pad_to_group(x: Tensor, group_size: int) -> tuple[Tensor, int]:
     if S % group_size == 0:
         return x, S
     pad_n = group_size - (S % group_size)
-    padding = torch.zeros(
-        *x.shape[:-2], pad_n, x.shape[-1], dtype=x.dtype, device=x.device
-    )
+    padding = torch.zeros(*x.shape[:-2], pad_n, x.shape[-1], dtype=x.dtype, device=x.device)
     return torch.cat([x, padding], dim=-2), S

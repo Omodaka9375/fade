@@ -16,6 +16,7 @@ Supported schemes:
                           ``compute_cos_sin`` returns ones/zeros so that
                           ``_apply_rope`` / ``_inverse_rope`` are identity.
 """
+
 from __future__ import annotations
 
 import math
@@ -171,7 +172,9 @@ class Yarn(RopeScheme):
     def _yarn_ramp(self, dim_idx: float) -> float:
         """Linear ramp between beta_fast and beta_slow."""
         low = self.beta_fast * self.head_dim / (2 * math.pi * self.original_max_position_embeddings)
-        high = self.beta_slow * self.head_dim / (2 * math.pi * self.original_max_position_embeddings)
+        high = (
+            self.beta_slow * self.head_dim / (2 * math.pi * self.original_max_position_embeddings)
+        )
         if dim_idx < low:
             return 0.0
         if dim_idx > high:
@@ -211,10 +214,9 @@ class Proportional(RopeScheme):
         # Rotated dims: use head_dim as denominator (not rotary_dim).
         rope_angles = self.rotary_dim // 2
         freq_exponents = (
-            torch.arange(0, 2 * rope_angles, 2, dtype=torch.float32, device=device)
-            / self.head_dim
+            torch.arange(0, 2 * rope_angles, 2, dtype=torch.float32, device=device) / self.head_dim
         )
-        inv = 1.0 / (self.theta ** freq_exponents)
+        inv = 1.0 / (self.theta**freq_exponents)
         # Zero-pad for non-rotated dims (cos=1, sin=0 → identity rotation).
         nope_angles = (self.head_dim // 2) - rope_angles
         if nope_angles > 0:
@@ -266,9 +268,13 @@ def _scheme_from_rope_params(
         return Vanilla(theta=theta, head_dim=head_dim)
     # Delegate to the main extract logic for other types.
     import types
+
     mock = types.SimpleNamespace(
         rope_theta=theta,
-        rope_scaling={"type": rope_type, **{k: v for k, v in rp.items() if k not in ("rope_theta", "rope_type", "type")}},
+        rope_scaling={
+            "type": rope_type,
+            **{k: v for k, v in rp.items() if k not in ("rope_theta", "rope_type", "type")},
+        },
         hidden_size=head_dim,
         num_attention_heads=1,
     )
@@ -361,10 +367,12 @@ def extract_rope_scheme(cfg, head_dim: int | None = None) -> RopeScheme:
         prf = float(rope_scaling.get("partial_rotary_factor", 1.0))
         return Proportional(theta=theta, head_dim=head_dim, partial_rotary_factor=prf)
     factor = float(rope_scaling.get("factor", 1.0))
-    orig_max = int(rope_scaling.get(
-        "original_max_position_embeddings",
-        getattr(cfg, "original_max_position_embeddings", DEFAULT_ORIGINAL_MAX_POS),
-    ))
+    orig_max = int(
+        rope_scaling.get(
+            "original_max_position_embeddings",
+            getattr(cfg, "original_max_position_embeddings", DEFAULT_ORIGINAL_MAX_POS),
+        )
+    )
 
     if scale_type == "linear":
         return LinearScaled(theta=theta, head_dim=head_dim, factor=factor)
@@ -391,6 +399,7 @@ def extract_rope_scheme(cfg, head_dim: int | None = None) -> RopeScheme:
 
     # Unknown scaling type — fall back to vanilla + a warning.
     import warnings
+
     warnings.warn(
         f"Unknown rope_scaling type {scale_type!r}; falling back to vanilla RoPE.",
         RuntimeWarning,

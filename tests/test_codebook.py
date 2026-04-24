@@ -1,4 +1,5 @@
 """Tests for the Phase 3 PQ codebook (W9)."""
+
 from __future__ import annotations
 
 import pytest

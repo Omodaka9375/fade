@@ -10,6 +10,7 @@ are a future workstream; those require a `[B, S]` tiers tensor and validity
 masking and are tracked separately. The tests here lock in the shared-tier
 contract so we don't regress while W2.5 is being designed.
 """
+
 from __future__ import annotations
 
 import torch
@@ -94,9 +95,18 @@ def test_tier_assignment_batched_splits_storage():
     cache.update(k_rope, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -121,9 +131,7 @@ def test_fp16_rows_stay_bit_exact_per_row_batched():
     cache.update(k_rope, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
     _, v_out = cache._materialize(0)
@@ -142,9 +150,7 @@ def test_eviction_batched_shrinks_length():
     k_rope = _apply_rope(k, cos, sin)
     cache.update(k_rope, v, layer_idx=0)
 
-    tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16]
-    )
+    tiers = torch.tensor([TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16])
     cache.apply_tier_assignment(0, tiers)
     assert cache.get_seq_length(0) == 4
 
@@ -189,9 +195,7 @@ def test_subsequent_update_after_reassign_batched():
     cache.update(k_rope, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -268,8 +272,12 @@ def test_assign_one_layer_unbatched_contract_preserved():
     """Sanity: the policy still works with [S]-shaped scores even at B>1 caches."""
     scores = torch.tensor([0.1, 0.2, 5.0, 4.0, 3.0, 0.5, 0.4, 0.3])
     tiers = _assign_one_layer(
-        S=8, scores=scores, n_sink=1, recent_window=1,
-        int4_budget=2, int2_budget=0,
+        S=8,
+        scores=scores,
+        n_sink=1,
+        recent_window=1,
+        int4_budget=2,
+        int2_budget=0,
     )
     assert tiers.shape == (8,)
     assert tiers[0].item() == TIER_FP16  # sink

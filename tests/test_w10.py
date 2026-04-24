@@ -1,4 +1,5 @@
 """Tests for W10: asymmetric K/V compression + learned eviction policy."""
+
 from __future__ import annotations
 
 import pytest
@@ -14,8 +15,13 @@ DTYPE = torch.float32
 
 def _make_cache(**kw) -> TieredKVCache:
     defaults = dict(
-        n_sink=2, recent_window=3, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=10000.0, head_dim=D,
+        n_sink=2,
+        recent_window=3,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=10000.0,
+        head_dim=D,
     )
     defaults.update(kw)
     return TieredKVCache(**defaults)
@@ -43,9 +49,18 @@ def test_asymmetric_k4_v2_round_trip():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -72,9 +87,7 @@ def test_asymmetric_k4_v4_is_default():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
     k_out, _v_out = cache._materialize(0)
@@ -99,8 +112,12 @@ def test_eviction_mlp_forward_shape():
 
 def test_build_features_shape():
     features = _build_features(
-        S=16, scores=torch.rand(16), layer_idx=1, num_layers=4,
-        step=100, device=torch.device("cpu"),
+        S=16,
+        scores=torch.rand(16),
+        layer_idx=1,
+        num_layers=4,
+        step=100,
+        device=torch.device("cpu"),
     )
     assert features.shape == (16, 4)
     assert torch.isfinite(features).all()
@@ -112,8 +129,12 @@ def test_build_features_shape():
 def test_build_features_no_scores():
     """When scores is None, mass feature should be zero."""
     features = _build_features(
-        S=8, scores=None, layer_idx=0, num_layers=2,
-        step=50, device=torch.device("cpu"),
+        S=8,
+        scores=None,
+        layer_idx=0,
+        num_layers=2,
+        step=50,
+        device=torch.device("cpu"),
     )
     assert (features[:, 1] == 0).all()
 

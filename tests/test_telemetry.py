@@ -1,4 +1,5 @@
 """Tests for W8 observability: telemetry events, exporters, and debug dump."""
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,13 @@ DTYPE = torch.float32
 
 def _make_cache(**kw) -> TieredKVCache:
     defaults = dict(
-        n_sink=2, recent_window=3, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=10000.0, head_dim=D,
+        n_sink=2,
+        recent_window=3,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=10000.0,
+        head_dim=D,
     )
     defaults.update(kw)
     return TieredKVCache(**defaults)
@@ -48,9 +54,18 @@ def test_attach_telemetry_emits_events():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -72,9 +87,7 @@ def test_telemetry_captures_eviction_counts():
     v = torch.randn(B, H, 6, D)
     cache.update(k, v, layer_idx=0)
 
-    tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16]
-    )
+    tiers = torch.tensor([TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16])
     cache.apply_tier_assignment(0, tiers)
 
     ev = exporter.events[0]
@@ -134,9 +147,18 @@ def test_dump_debug_creates_valid_json():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 

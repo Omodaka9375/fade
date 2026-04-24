@@ -17,6 +17,7 @@ Covered architectures:
     * Gemma-2    — vanilla RoPE, query pre-norm
     * Falcon     — ALiBi (non-RoPE) via alibi=True
 """
+
 from __future__ import annotations
 
 import pytest
@@ -75,8 +76,12 @@ def _run_model(model_type: str, extra_cfg: dict | None = None, expect_scheme=Van
 
     num_layers = cfg.num_hidden_layers
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
 
     # Check auto-detected scheme.

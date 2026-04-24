@@ -15,6 +15,7 @@ Knobs (all at the top of the file):
       is safe during prefill. Above this limit tracking starts on decode only.
     - RUN_PPL, RUN_NEEDLE: enable perplexity / needle-in-a-haystack evals
 """
+
 from __future__ import annotations
 
 import gc
@@ -159,7 +160,7 @@ _STORY_PROMPT: str = (
     "the minute. He set down the binoculars and picked up his pen.\n\n"
 )
 
-FILLER_REPEATS: int = 6    # repeats for diverse/repetitive modes
+FILLER_REPEATS: int = 6  # repeats for diverse/repetitive modes
 if PROMPT_MODE == "chat":
     PROMPT: str = _CHAT_PROMPT
 elif PROMPT_MODE == "story":
@@ -197,8 +198,8 @@ PHASE: str = "2"
 EVICTION_POLICY: str = "h2o"
 
 if PHASE == "2":
-    INT4_BUDGET: int | None = 400   # ~400 middle tokens in INT4
-    INT2_BUDGET: int = 0               # INT2 disabled (too lossy for small models)
+    INT4_BUDGET: int | None = 400  # ~400 middle tokens in INT4
+    INT2_BUDGET: int = 0  # INT2 disabled (too lossy for small models)
     TRACK_ATTENTION: bool = EVICTION_POLICY in ("h2o", "ema")
 else:  # Phase 1-A
     INT4_BUDGET: int | None = None
@@ -238,13 +239,13 @@ def greedy_generate(
     """Greedy decode one token at a time. Returns [1, generated_len] token ids."""
     prefill_len = int(input_ids.shape[-1])
     need_prefill_attn = (
-        use_tiered_policy
-        and eviction_policy == "h2o"
-        and prefill_len <= PREFILL_TRACK_LIMIT
+        use_tiered_policy and eviction_policy == "h2o" and prefill_len <= PREFILL_TRACK_LIMIT
     )
     # For H2O we need the raw prefill attention tensors (not just tracker EMA).
     # For EMA we just feed the tracker. For position we skip entirely.
-    prefill_tracker = tracker if (tracker is not None and prefill_len <= PREFILL_TRACK_LIMIT) else None
+    prefill_tracker = (
+        tracker if (tracker is not None and prefill_len <= PREFILL_TRACK_LIMIT) else None
+    )
     if need_prefill_attn:
         # Run prefill WITH output_attentions to capture the full attention matrix.
         out = forward_with_tracking(model, input_ids, past_key_values, tracker=prefill_tracker)
@@ -263,8 +264,7 @@ def greedy_generate(
 
         if reassign_every and use_tiered_policy and (step + 1) % reassign_every == 0:
             if eviction_policy == "h2o" and prefill_attentions:
-                reassign_tiers_h2o(past_key_values, prefill_attentions,
-                                   num_layers, tracker=tracker)
+                reassign_tiers_h2o(past_key_values, prefill_attentions, num_layers, tracker=tracker)
             elif eviction_policy == "position":
                 reassign_tiers_by_position(past_key_values, num_layers)
             elif tracker is not None:
@@ -285,7 +285,9 @@ def main() -> None:
     # fine under SDPA / Flash Attention 2.
     needs_eager = EVICTION_POLICY == "h2o" or TRACK_ATTENTION
     model, tokenizer = load_model(
-        MODEL_ID, device_map=DEVICE, dtype=DTYPE,
+        MODEL_ID,
+        device_map=DEVICE,
+        dtype=DTYPE,
         attn_impl="eager" if needs_eager else "sdpa",
     )
     num_layers: int = model.config.num_hidden_layers
@@ -303,17 +305,24 @@ def main() -> None:
     with PeakMemory(DEVICE) as mem_base:
         t0 = time.perf_counter()
         baseline_out = greedy_generate(
-            model, tokenizer, enc.input_ids, baseline_cache,
+            model,
+            tokenizer,
+            enc.input_ids,
+            baseline_cache,
             max_new_tokens=MAX_NEW_TOKENS,
-            tracker=None, reassign_every=None, num_layers=num_layers,
+            tracker=None,
+            reassign_every=None,
+            num_layers=num_layers,
             use_tiered_policy=False,
         )
         t_base = time.perf_counter() - t0
     base_cache_mib = cache_storage_bytes(baseline_cache) / (1024 * 1024)
-    print(f"generated={baseline_out.shape[1]}  elapsed={t_base:.2f}s  "
-          f"peak={mem_base.peak_mib:.1f} MiB  "
-          f"tps={baseline_out.shape[1] / t_base:.2f}  "
-          f"kv_cache={base_cache_mib:.1f} MiB")
+    print(
+        f"generated={baseline_out.shape[1]}  elapsed={t_base:.2f}s  "
+        f"peak={mem_base.peak_mib:.1f} MiB  "
+        f"tps={baseline_out.shape[1] / t_base:.2f}  "
+        f"kv_cache={base_cache_mib:.1f} MiB"
+    )
     print(tokenizer.decode(baseline_out[0], skip_special_tokens=True))
 
     # Drop the baseline cache before the tiered run so the allocator can reclaim.
@@ -324,8 +333,10 @@ def main() -> None:
 
     # --------------------------- TIERED ----------------------------- #
     if PHASE == "2":
-        label = (f"TIERED Phase 2 ({EVICTION_POLICY}, sinks+recent FP16, "
-                 f"INT4_BUDGET={INT4_BUDGET}, INT2_BUDGET={INT2_BUDGET})")
+        label = (
+            f"TIERED Phase 2 ({EVICTION_POLICY}, sinks+recent FP16, "
+            f"INT4_BUDGET={INT4_BUDGET}, INT2_BUDGET={INT2_BUDGET})"
+        )
     elif TRACK_ATTENTION:
         label = "TIERED (attention-aware, sinks+recent FP16, middle INT4)"
     else:
@@ -343,32 +354,42 @@ def main() -> None:
     with PeakMemory(DEVICE) as mem_tier:
         t0 = time.perf_counter()
         tiered_out = greedy_generate(
-            model, tokenizer, enc.input_ids, tiered_cache,
+            model,
+            tokenizer,
+            enc.input_ids,
+            tiered_cache,
             max_new_tokens=MAX_NEW_TOKENS,
-            tracker=tracker, reassign_every=REASSIGN_EVERY, num_layers=num_layers,
-            use_tiered_policy=True, eviction_policy=EVICTION_POLICY,
+            tracker=tracker,
+            reassign_every=REASSIGN_EVERY,
+            num_layers=num_layers,
+            use_tiered_policy=True,
+            eviction_policy=EVICTION_POLICY,
         )
         t_tier = time.perf_counter() - t0
     tier_cache_mib = cache_storage_bytes(tiered_cache) / (1024 * 1024)
-    print(f"generated={tiered_out.shape[1]}  elapsed={t_tier:.2f}s  "
-          f"peak={mem_tier.peak_mib:.1f} MiB  "
-          f"tps={tiered_out.shape[1] / t_tier:.2f}  "
-          f"kv_cache={tier_cache_mib:.1f} MiB")
+    print(
+        f"generated={tiered_out.shape[1]}  elapsed={t_tier:.2f}s  "
+        f"peak={mem_tier.peak_mib:.1f} MiB  "
+        f"tps={tiered_out.shape[1] / t_tier:.2f}  "
+        f"kv_cache={tier_cache_mib:.1f} MiB"
+    )
     print(tokenizer.decode(tiered_out[0], skip_special_tokens=True))
 
     # --------------------------- COMPARE ---------------------------- #
     print("\n=== DELTA ===")
     min_len = min(baseline_out.shape[1], tiered_out.shape[1])
-    match_rate = (
-        (baseline_out[0, :min_len] == tiered_out[0, :min_len]).float().mean().item()
-    )
+    match_rate = (baseline_out[0, :min_len] == tiered_out[0, :min_len]).float().mean().item()
     print(f"greedy_token_match_rate_over_{min_len}_tokens = {match_rate:.2%}")
     if mem_base.peak_mib > 0:
-        print(f"peak_memory_delta = {mem_tier.peak_mib - mem_base.peak_mib:+.1f} MiB "
-              f"({100.0 * (mem_tier.peak_mib / mem_base.peak_mib - 1.0):+.1f}%)")
+        print(
+            f"peak_memory_delta = {mem_tier.peak_mib - mem_base.peak_mib:+.1f} MiB "
+            f"({100.0 * (mem_tier.peak_mib / mem_base.peak_mib - 1.0):+.1f}%)"
+        )
     if base_cache_mib > 0:
-        print(f"kv_cache_delta   = {tier_cache_mib - base_cache_mib:+.2f} MiB "
-              f"({100.0 * (tier_cache_mib / base_cache_mib - 1.0):+.1f}%)")
+        print(
+            f"kv_cache_delta   = {tier_cache_mib - base_cache_mib:+.2f} MiB "
+            f"({100.0 * (tier_cache_mib / base_cache_mib - 1.0):+.1f}%)"
+        )
     print(f"tps_delta = {tiered_out.shape[1] / t_tier - baseline_out.shape[1] / t_base:+.2f} tok/s")
 
     # --------------------------- PERPLEXITY -------------------------- #
@@ -378,6 +399,7 @@ def main() -> None:
         if PPL_DATASET == "wikitext":
             try:
                 from datasets import load_dataset
+
                 ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
                 ppl_text = "\n\n".join(ds["text"])
                 print("  (using WikiText-2-raw test set)")
@@ -386,8 +408,12 @@ def main() -> None:
         else:
             print("  (using built-in diverse text)")
         ppl = perplexity(
-            model, tokenizer, ppl_text,
-            max_length=PPL_MAX_LENGTH, stride=PPL_STRIDE, device=DEVICE,
+            model,
+            tokenizer,
+            ppl_text,
+            max_length=PPL_MAX_LENGTH,
+            stride=PPL_STRIDE,
+            device=DEVICE,
         )
         print(f"ppl={ppl:.3f}  (baseline model, no cache tiers)")
 
@@ -395,8 +421,10 @@ def main() -> None:
     if RUN_NEEDLE:
         print("\n=== NEEDLE-IN-A-HAYSTACK ===")
         result = run_needle(
-            model, tokenizer,
-            target_tokens=NEEDLE_TARGET_TOKENS, device=DEVICE,
+            model,
+            tokenizer,
+            target_tokens=NEEDLE_TARGET_TOKENS,
+            device=DEVICE,
         )
         print(result)
 

@@ -5,6 +5,7 @@ Covers:
     * Dequant-cache age-based eviction.
     * INT4 kernel fallback path.
 """
+
 from __future__ import annotations
 
 import torch
@@ -19,8 +20,13 @@ DTYPE = torch.float32
 
 def _make_cache(**kw) -> TieredKVCache:
     defaults = dict(
-        n_sink=2, recent_window=3, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=10000.0, head_dim=D,
+        n_sink=2,
+        recent_window=3,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=10000.0,
+        head_dim=D,
     )
     defaults.update(kw)
     return TieredKVCache(**defaults)
@@ -55,9 +61,18 @@ def test_prealloc_buffer_works_after_reassignment():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -107,9 +122,7 @@ def test_dequant_age_eviction():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
 

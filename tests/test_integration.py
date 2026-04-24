@@ -6,6 +6,7 @@ layer count/hidden size and random weights, then verify:
     2. ``output_attentions=True`` with eager attention produces real tensors.
     3. ``reassign_tiers`` succeeds and the next forward still works.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -45,8 +46,12 @@ def test_tiered_cache_end_to_end():
     num_layers = cfg.num_hidden_layers
 
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     tracker = AttentionTracker(num_layers=num_layers)
 
@@ -95,15 +100,23 @@ def test_tiered_cache_batched_matches_unbatched_per_row():
 
     # Unbatched reference: run the same prompt through a fresh cache.
     cache_ref = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     ref_out = forward_with_tracking(model, single, cache_ref, tracker=None)
 
     # Batched run.
     cache_batched = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,
+        int2_budget=0,
     )
     batched_out = forward_with_tracking(model, batched_ids, cache_batched, tracker=None)
 
@@ -116,10 +129,19 @@ def test_tiered_cache_batched_matches_unbatched_per_row():
 
     # Reassign tiers across the batch — should not crash.
     tracker = AttentionTracker(num_layers=num_layers)
-    forward_with_tracking(model, batched_ids, create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=None, int2_budget=0,
-    ), tracker=tracker)
+    forward_with_tracking(
+        model,
+        batched_ids,
+        create_tiered_cache(
+            model,
+            dtype=DTYPE,
+            n_sink=2,
+            recent_window=4,
+            int4_budget=None,
+            int2_budget=0,
+        ),
+        tracker=tracker,
+    )
     reassign_tiers(cache_batched, tracker, num_layers)
     # Decode one more step.
     next_tok = batched_out.logits[:, -1:, :].argmax(dim=-1)
@@ -133,8 +155,12 @@ def test_tiered_cache_with_eviction():
     num_layers = cfg.num_hidden_layers
 
     cache = create_tiered_cache(
-        model, dtype=DTYPE,
-        n_sink=2, recent_window=4, int4_budget=4, int2_budget=2,
+        model,
+        dtype=DTYPE,
+        n_sink=2,
+        recent_window=4,
+        int4_budget=4,
+        int2_budget=2,
     )
     tracker = AttentionTracker(num_layers=num_layers)
 

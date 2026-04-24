@@ -3,6 +3,7 @@
 These run without any LLM — they exercise the bookkeeping and the FP16/INT4/INT2
 round-trip with synthetic K/V tensors, including Phase 2 pre-RoPE caching.
 """
+
 from __future__ import annotations
 
 import torch
@@ -91,9 +92,18 @@ def test_apply_tier_assignment_splits_storage_without_loss():
     cache.update(k_rope, v, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -114,9 +124,7 @@ def test_materialize_preserves_fp16_positions_approximately():
     cache.update(k_rope, v, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -140,9 +148,7 @@ def test_eviction_shrinks_cache_length():
     k_rope = _apply_rope(k, cos, sin)
     cache.update(k_rope, v, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
 
-    tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16]
-    )
+    tiers = torch.tensor([TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_FP16, TIER_FP16])
     cache.apply_tier_assignment(0, tiers)
     assert cache.get_seq_length(0) == 4
 
@@ -157,9 +163,7 @@ def test_subsequent_update_after_reassign_works():
     cache.update(k_rope, v, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -201,9 +205,7 @@ def test_eviction_with_rerope_produces_contiguous_positions():
 
     # Evict positions 2 and 3.
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT,
-         TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_EVICT, TIER_EVICT, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
     assert cache.get_seq_length(0) == 6
@@ -214,7 +216,9 @@ def test_eviction_with_rerope_produces_contiguous_positions():
     pos_new = torch.tensor([6])
     cos_new, sin_new = _make_rope_cos_sin(pos_new, D)
     k_new_rope = _apply_rope(k_new, cos_new, sin_new)
-    k_out, _v_out = cache.update(k_new_rope, v_new, layer_idx=0, cache_kwargs={"cos": cos_new, "sin": sin_new})
+    k_out, _v_out = cache.update(
+        k_new_rope, v_new, layer_idx=0, cache_kwargs={"cos": cos_new, "sin": sin_new}
+    )
     assert k_out.shape == (B, H, 7, D)
     assert cache.get_seq_length(0) == 7
 
@@ -222,8 +226,13 @@ def test_eviction_with_rerope_produces_contiguous_positions():
 def test_int2_tier_storage_round_trip():
     """TIER_INT2 tokens are stored and recovered (with quantization loss)."""
     cache = TieredKVCache(
-        n_sink=2, recent_window=2, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=ROPE_THETA, head_dim=D,
+        n_sink=2,
+        recent_window=2,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=ROPE_THETA,
+        head_dim=D,
     )
     # 68 tokens — middle = 64 which divides evenly by group_size=64.
     S = 68
@@ -252,8 +261,13 @@ def test_int2_tier_storage_round_trip():
 def test_mixed_int4_int2_middle_ordering():
     """INT4 and INT2 middle tokens are merged in position order."""
     cache = TieredKVCache(
-        n_sink=1, recent_window=1, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=ROPE_THETA, head_dim=D,
+        n_sink=1,
+        recent_window=1,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=ROPE_THETA,
+        head_dim=D,
     )
     # 130 tokens: 1 sink + 128 middle + 1 recent.
     # We'll assign odd-indexed middle tokens to INT4 and even-indexed to INT2.

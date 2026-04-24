@@ -11,6 +11,7 @@ Supported minors:
 If a third minor needs support, add a branch here rather than scattering
 ``try/except ImportError`` across the package.
 """
+
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError

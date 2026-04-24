@@ -8,6 +8,7 @@ Per-layer, per-head product quantization of K and V vectors:
 Requires ``scikit-learn`` for training (``pip install fade[codebook]``).
 Encode/decode are pure-torch and run on any device.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ class PQCodebook:
         centroids: [n_sub, num_centroids, sub_dim] float tensor of centroids.
         sub_dim: size of each sub-vector.
     """
+
     centroids: Tensor
     sub_dim: int
 
@@ -64,8 +66,7 @@ class PQCodebook:
             from sklearn.cluster import MiniBatchKMeans
         except ImportError as e:
             raise ImportError(
-                "PQCodebook.train requires scikit-learn. "
-                "Install with: pip install fade[codebook]"
+                "PQCodebook.train requires scikit-learn. Install with: pip install fade[codebook]"
             ) from e
 
         N, D = vectors.shape

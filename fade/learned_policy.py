@@ -13,6 +13,7 @@ Usage:
     mlp = EvictionMLP.load("fade/checkpoints/eviction_mlp.pt")
     reassign_tiers_learned(cache, mlp, num_layers, step=current_step)
 """
+
 from __future__ import annotations
 
 from pathlib import Path

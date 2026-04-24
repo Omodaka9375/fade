@@ -8,6 +8,7 @@ The cache inherits from ``transformers.DynamicCache`` so the HF generate loop
 accepts it without modification. Only ``update()`` and ``get_seq_length()`` are
 actually consulted by the loop; everything else here is for the tier policy.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,23 +61,24 @@ class LayerState:
           ``fp16_k[:sink_count] + int4_dequant + fp16_k[sink_count:]``, so the
           hot path never needs ``argsort`` or ``index_select``.
     """
-    fp16_k: Tensor | None = None   # [B, H, S_fp, D]
+
+    fp16_k: Tensor | None = None  # [B, H, S_fp, D]
     fp16_v: Tensor | None = None
     fp16_pos: Tensor | None = None  # LongTensor [S_fp]
-    int4_kq: Tensor | None = None   # int8 tensor holding INT4 values, [B, H, S_q, D]
-    int4_ks: Tensor | None = None   # K scales, [B, H, 1, D]
+    int4_kq: Tensor | None = None  # int8 tensor holding INT4 values, [B, H, S_q, D]
+    int4_ks: Tensor | None = None  # K scales, [B, H, 1, D]
     int4_vq: Tensor | None = None
-    int4_vs: Tensor | None = None   # V scales, [B, H, S_q, 1]
+    int4_vs: Tensor | None = None  # V scales, [B, H, S_q, 1]
     int4_pos: Tensor | None = None
     # INT2 tier (Phase 2)
-    int2_kq: Tensor | None = None   # int8 holding INT2 values, [B, H, S_padded, D]
-    int2_ks: Tensor | None = None   # K scales, [B, H, G, D]
+    int2_kq: Tensor | None = None  # int8 holding INT2 values, [B, H, S_padded, D]
+    int2_ks: Tensor | None = None  # K scales, [B, H, G, D]
     int2_vq: Tensor | None = None
-    int2_vs: Tensor | None = None   # V scales, [B, H, G, D]
+    int2_vs: Tensor | None = None  # V scales, [B, H, G, D]
     int2_pos: Tensor | None = None
-    int2_actual_count: int = 0         # pre-padding token count (for trim after dequant)
+    int2_actual_count: int = 0  # pre-padding token count (for trim after dequant)
     int2_group_size: int = DEFAULT_INT2_GROUP_SIZE
-    sink_count: int = 0                # number of leading fp16 entries that are sinks
+    sink_count: int = 0  # number of leading fp16 entries that are sinks
     # Monotonic counter: the absolute position to assign to the next appended
     # token. Never decreases, even after eviction. Guarantees unique position
     # labels across the lifetime of the cache.
@@ -229,7 +231,9 @@ class TieredKVCache(DynamicCache):
         return (k_f * cos_f - TieredKVCache._rotate_half(k_f) * sin_f).to(k.dtype)
 
     def _compute_cos_sin(
-        self, positions: Tensor, device: torch.device,
+        self,
+        positions: Tensor,
+        device: torch.device,
     ) -> tuple[Tensor, Tensor]:
         """Compute RoPE cos/sin for arbitrary position IDs.
 
@@ -244,7 +248,9 @@ class TieredKVCache(DynamicCache):
             (cos, sin) each broadcastable to [1, 1, S, head_dim].
         """
         return self._ensure_rope_scheme().compute_cos_sin(
-            positions, device, model_dtype=self.dtype,
+            positions,
+            device,
+            model_dtype=self.dtype,
         )
 
     def _streamingllm_positions(self, total: int, device: torch.device) -> Tensor:
@@ -276,16 +282,14 @@ class TieredKVCache(DynamicCache):
             )
         if key_states.shape != value_states.shape:
             raise ValueError(
-                f"K/V shape mismatch: {tuple(key_states.shape)} vs "
-                f"{tuple(value_states.shape)}"
+                f"K/V shape mismatch: {tuple(key_states.shape)} vs {tuple(value_states.shape)}"
             )
         batch = int(key_states.shape[0])
         if self.batch_size is None:
             self.batch_size = batch
         elif self.batch_size != batch:
             raise ValueError(
-                f"batch size mismatch: cache pinned to B={self.batch_size} "
-                f"but got B={batch}"
+                f"batch size mismatch: cache pinned to B={self.batch_size} but got B={batch}"
             )
         if self.head_dim is None:
             self.head_dim = int(key_states.shape[-1])
@@ -300,7 +304,9 @@ class TieredKVCache(DynamicCache):
         return self._layers[layer_idx].total_seq_length()
 
     def get_mask_sizes(
-        self, cache_position: Tensor, layer_idx: int = 0,
+        self,
+        cache_position: Tensor,
+        layer_idx: int = 0,
     ) -> tuple[int, int]:
         """Return (kv_length, kv_offset) for the attention mask.
 
@@ -322,11 +328,20 @@ class TieredKVCache(DynamicCache):
         total = 0
         for state in self._layers:
             for t in (
-                state.fp16_k, state.fp16_v,
-                state.int4_kq, state.int4_vq, state.int4_ks, state.int4_vs,
-                state.int4_k_deq, state.int4_v_deq,
-                state.int2_kq, state.int2_vq, state.int2_ks, state.int2_vs,
-                state.int2_k_deq, state.int2_v_deq,
+                state.fp16_k,
+                state.fp16_v,
+                state.int4_kq,
+                state.int4_vq,
+                state.int4_ks,
+                state.int4_vs,
+                state.int4_k_deq,
+                state.int4_v_deq,
+                state.int2_kq,
+                state.int2_vq,
+                state.int2_ks,
+                state.int2_vs,
+                state.int2_k_deq,
+                state.int2_v_deq,
             ):
                 if t is not None:
                     total += int(t.element_size() * t.numel())
@@ -339,9 +354,16 @@ class TieredKVCache(DynamicCache):
         total = 0
         for state in self._layers:
             for t in (
-                state.fp16_k, state.fp16_v,
-                state.int4_kq, state.int4_vq, state.int4_ks, state.int4_vs,
-                state.int2_kq, state.int2_vq, state.int2_ks, state.int2_vs,
+                state.fp16_k,
+                state.fp16_v,
+                state.int4_kq,
+                state.int4_vq,
+                state.int4_ks,
+                state.int4_vs,
+                state.int2_kq,
+                state.int2_vq,
+                state.int2_ks,
+                state.int2_vs,
             ):
                 if t is not None:
                     total += int(t.element_size() * t.numel())
@@ -351,12 +373,25 @@ class TieredKVCache(DynamicCache):
     # Checkpointing
     # ------------------------------------------------------------------ #
     _LAYER_TENSOR_KEYS = (
-        "fp16_k", "fp16_v", "fp16_pos",
-        "int4_kq", "int4_ks", "int4_vq", "int4_vs", "int4_pos",
-        "int2_kq", "int2_ks", "int2_vq", "int2_vs", "int2_pos",
+        "fp16_k",
+        "fp16_v",
+        "fp16_pos",
+        "int4_kq",
+        "int4_ks",
+        "int4_vq",
+        "int4_vs",
+        "int4_pos",
+        "int2_kq",
+        "int2_ks",
+        "int2_vq",
+        "int2_vs",
+        "int2_pos",
     )
     _LAYER_SCALAR_KEYS = (
-        "int2_actual_count", "int2_group_size", "sink_count", "next_position",
+        "int2_actual_count",
+        "int2_group_size",
+        "sink_count",
+        "next_position",
     )
 
     def cache_state_dict(self) -> dict:
@@ -531,9 +566,7 @@ class TieredKVCache(DynamicCache):
             raise RuntimeError(f"No cache state for layer {layer_idx}")
         return torch.cat(parts_k, dim=-2), torch.cat(parts_v, dim=-2)
 
-    def _all_in_position_order(
-        self, layer_idx: int
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    def _all_in_position_order(self, layer_idx: int) -> tuple[Tensor, Tensor, Tensor]:
         """Return (K, V, positions) in ascending position order for the tier
         policy. INT4 is dequantized to ``self.dtype``.
         """

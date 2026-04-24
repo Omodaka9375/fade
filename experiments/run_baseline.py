@@ -3,6 +3,7 @@
 This is the reference the tiered cache needs to beat on memory and match on
 quality. Run it once, record the numbers, commit them.
 """
+
 from __future__ import annotations
 
 import time
@@ -55,7 +56,7 @@ def main() -> None:
             )
         elapsed = time.perf_counter() - t0
 
-    generated = out[0, enc.input_ids.shape[1]:]
+    generated = out[0, enc.input_ids.shape[1] :]
     tps = generated.shape[0] / elapsed if elapsed > 0 else float("inf")
     print("\n--- generation ---")
     print(tokenizer.decode(generated, skip_special_tokens=True))
@@ -66,8 +67,12 @@ def main() -> None:
     if RUN_PPL:
         print("\n--- perplexity ---")
         ppl = perplexity(
-            model, tokenizer, PPL_TEXT,
-            max_length=PPL_MAX_LENGTH, stride=PPL_STRIDE, device=DEVICE,
+            model,
+            tokenizer,
+            PPL_TEXT,
+            max_length=PPL_MAX_LENGTH,
+            stride=PPL_STRIDE,
+            device=DEVICE,
         )
         print(f"ppl={ppl:.3f}")
 
@@ -75,8 +80,10 @@ def main() -> None:
     if RUN_NEEDLE:
         print("\n--- needle-in-a-haystack ---")
         result = run_needle(
-            model, tokenizer,
-            target_tokens=NEEDLE_TARGET_TOKENS, device=DEVICE,
+            model,
+            tokenizer,
+            target_tokens=NEEDLE_TARGET_TOKENS,
+            device=DEVICE,
         )
         print(result)
 

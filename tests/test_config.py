@@ -1,4 +1,5 @@
 """Tests for ``fade.config.FadeConfig`` validation and presets."""
+
 from __future__ import annotations
 
 import pytest

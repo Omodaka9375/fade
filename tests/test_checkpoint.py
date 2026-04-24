@@ -1,4 +1,5 @@
 """Cache checkpoint round-trip tests (W6)."""
+
 from __future__ import annotations
 
 import torch
@@ -11,8 +12,13 @@ DTYPE = torch.float32
 
 def _make_cache(**kw) -> TieredKVCache:
     defaults = dict(
-        n_sink=2, recent_window=3, int4_budget=None, int2_budget=0,
-        dtype=DTYPE, rope_theta=10000.0, head_dim=D,
+        n_sink=2,
+        recent_window=3,
+        int4_budget=None,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=10000.0,
+        head_dim=D,
     )
     defaults.update(kw)
     return TieredKVCache(**defaults)
@@ -50,9 +56,18 @@ def test_state_dict_round_trip_with_int4():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16, TIER_FP16]
+        [
+            TIER_FP16,
+            TIER_FP16,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_INT4,
+            TIER_FP16,
+            TIER_FP16,
+            TIER_FP16,
+        ]
     )
     cache.apply_tier_assignment(0, tiers)
 
@@ -79,9 +94,7 @@ def test_state_dict_excludes_dequant_caches():
     cache.update(k, v, layer_idx=0)
 
     tiers = torch.tensor(
-        [TIER_FP16, TIER_FP16,
-         TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4,
-         TIER_FP16, TIER_FP16]
+        [TIER_FP16, TIER_FP16, TIER_INT4, TIER_INT4, TIER_INT4, TIER_INT4, TIER_FP16, TIER_FP16]
     )
     cache.apply_tier_assignment(0, tiers)
     # Force dequant cache population.

@@ -8,6 +8,7 @@ Example:
     results = run_quality_suite(model, tokenizer, device="cuda")
     assert results["needle"]["passed"]
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -53,7 +54,9 @@ def run_quality_suite(
 
     if run_needle:
         needle_result = run_needle_test(
-            model, tokenizer, device=device,
+            model,
+            tokenizer,
+            device=device,
             target_tokens=needle_target_tokens,
         )
         results["needle"] = needle_result
@@ -61,20 +64,25 @@ def run_quality_suite(
     if run_ppl:
         text = ppl_text or DEFAULT_PPL_TEXT
         ppl_result = run_perplexity_test(
-            model, tokenizer, text=text, device=device,
-            max_length=ppl_max_length, stride=ppl_stride,
+            model,
+            tokenizer,
+            text=text,
+            device=device,
+            max_length=ppl_max_length,
+            stride=ppl_stride,
             threshold=ppl_threshold,
         )
         results["perplexity"] = ppl_result
 
-    results["all_passed"] = all(
-        r.get("passed", True) for r in results.values()
-    )
+    results["all_passed"] = all(r.get("passed", True) for r in results.values())
     return results
 
 
 def run_needle_test(
-    model, tokenizer, device="cuda", target_tokens=DEFAULT_NEEDLE_TARGET_TOKENS,
+    model,
+    tokenizer,
+    device="cuda",
+    target_tokens=DEFAULT_NEEDLE_TARGET_TOKENS,
 ) -> dict:
     """Run needle-in-a-haystack and return result dict."""
     result = run_needle(model, tokenizer, target_tokens=target_tokens, device=device)
@@ -82,8 +90,12 @@ def run_needle_test(
 
 
 def run_perplexity_test(
-    model, tokenizer, text: str, device="cuda",
-    max_length=DEFAULT_PPL_MAX_LENGTH, stride=DEFAULT_PPL_STRIDE,
+    model,
+    tokenizer,
+    text: str,
+    device="cuda",
+    max_length=DEFAULT_PPL_MAX_LENGTH,
+    stride=DEFAULT_PPL_STRIDE,
     threshold=DEFAULT_PPL_THRESHOLD,
 ) -> dict:
     """Run perplexity eval and return result dict with pass/fail."""
