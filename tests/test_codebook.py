@@ -92,3 +92,50 @@ def test_train_rejects_too_many_centroids():
     data = torch.randn(100, 64)
     with pytest.raises(ValueError, match="uint8"):
         PQCodebook.train(data, sub_dim=32, num_centroids=512)
+
+
+# --- ResidualPQCodebook ----------------------------------------------------- #
+def test_residual_pq_train():
+    from fade.codebook import ResidualPQCodebook
+
+    data = _calibration_data()
+    rpq = ResidualPQCodebook.train(data, sub_dim=SUB_DIM, num_centroids=NUM_CENTROIDS)
+    assert rpq.primary.centroids.shape == (HEAD_DIM // SUB_DIM, NUM_CENTROIDS, SUB_DIM)
+    assert rpq.residual.centroids.shape == rpq.primary.centroids.shape
+
+
+def test_residual_pq_encode_decode_shapes():
+    from fade.codebook import ResidualPQCodebook
+
+    data = _calibration_data()
+    rpq = ResidualPQCodebook.train(data, sub_dim=SUB_DIM, num_centroids=NUM_CENTROIDS)
+    codes1, codes2 = rpq.encode(data)
+    assert codes1.shape == (N_VECTORS, HEAD_DIM // SUB_DIM)
+    assert codes2.shape == codes1.shape
+    decoded = rpq.decode(codes1, codes2)
+    assert decoded.shape == (N_VECTORS, HEAD_DIM)
+
+
+def test_residual_pq_beats_single_stage():
+    """A3 acceptance: residual PQ reconstruction error < single-stage PQ."""
+    from fade.codebook import ResidualPQCodebook
+
+    data = _calibration_data()
+
+    # Single-stage PQ.
+    single = PQCodebook.train(data, sub_dim=SUB_DIM, num_centroids=NUM_CENTROIDS)
+    codes_s = single.encode(data)
+    recon_s = single.decode(codes_s)
+    err_single = (data - recon_s).pow(2).mean().sqrt().item()
+
+    # Residual PQ.
+    rpq = ResidualPQCodebook.train(data, sub_dim=SUB_DIM, num_centroids=NUM_CENTROIDS)
+    codes1, codes2 = rpq.encode(data)
+    recon_r = rpq.decode(codes1, codes2)
+    err_residual = (data - recon_r).pow(2).mean().sqrt().item()
+
+    assert err_residual < err_single, (
+        f"Residual PQ error {err_residual:.4f} should be < single PQ {err_single:.4f}"
+    )
+    improvement = 1 - err_residual / err_single
+    print(f"Residual PQ improvement: {improvement:.0%} lower RMSE")

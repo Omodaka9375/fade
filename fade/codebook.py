@@ -137,3 +137,73 @@ class PQCodebook:
         # [M, head_dim]
         decoded = torch.cat(parts, dim=-1)
         return decoded.view(*orig_shape[:-1], self.head_dim)
+
+
+@dataclass
+class ResidualPQCodebook:
+    """Two-stage residual product quantization.
+
+    Stage 1: encode with ``primary`` codebook.
+    Stage 2: compute residual (original - stage1 reconstruction),
+             encode residual with ``residual`` codebook.
+
+    Reconstruction = primary.decode(codes1) + residual.decode(codes2).
+    Typically halves reconstruction error vs single-stage PQ.
+
+    Attributes:
+        primary: first-stage PQ codebook.
+        residual: second-stage PQ codebook trained on residuals.
+    """
+
+    primary: PQCodebook
+    residual: PQCodebook
+
+    @property
+    def sub_dim(self) -> int:
+        return self.primary.sub_dim
+
+    @property
+    def head_dim(self) -> int:
+        return self.primary.head_dim
+
+    @classmethod
+    def train(
+        cls,
+        vectors: Tensor,
+        sub_dim: int = DEFAULT_SUB_DIM,
+        num_centroids: int = DEFAULT_NUM_CENTROIDS,
+    ) -> ResidualPQCodebook:
+        """Train a two-stage residual PQ codebook.
+
+        Args:
+            vectors: [N, head_dim] calibration activations.
+            sub_dim: sub-vector length.
+            num_centroids: entries per sub-codebook per stage.
+
+        Returns:
+            Trained ``ResidualPQCodebook``.
+        """
+        # Stage 1: train primary codebook.
+        primary = PQCodebook.train(vectors, sub_dim=sub_dim, num_centroids=num_centroids)
+
+        # Compute residuals.
+        codes1 = primary.encode(vectors)
+        recon1 = primary.decode(codes1)
+        residuals = vectors.float() - recon1.float()
+
+        # Stage 2: train residual codebook on the residuals.
+        residual_cb = PQCodebook.train(residuals, sub_dim=sub_dim, num_centroids=num_centroids)
+
+        return cls(primary=primary, residual=residual_cb)
+
+    def encode(self, vectors: Tensor) -> tuple[Tensor, Tensor]:
+        """Encode to (primary_codes, residual_codes), each [..., n_sub] uint8."""
+        codes1 = self.primary.encode(vectors)
+        recon1 = self.primary.decode(codes1)
+        residuals = vectors.float() - recon1.float()
+        codes2 = self.residual.encode(residuals)
+        return codes1, codes2
+
+    def decode(self, codes1: Tensor, codes2: Tensor) -> Tensor:
+        """Decode: primary reconstruction + residual reconstruction."""
+        return self.primary.decode(codes1) + self.residual.decode(codes2)
