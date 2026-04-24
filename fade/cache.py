@@ -193,7 +193,22 @@ class TieredKVCache(DynamicCache):
         self._rope_scheme = rope_scheme  # resolved lazily in _ensure_rope_scheme
         self._pq_codebook_k = None  # PQCodebook for K (set via set_codebooks)
         self._pq_codebook_v = None  # PQCodebook for V
+        self._compiled_materialize = None  # populated by enable_compile()
         self._layers: list[LayerState] = []
+
+    def enable_compile(self, **compile_kwargs) -> None:
+        """Compile the materialize hot path with ``torch.compile``.
+
+        Call after the first ``update()`` so shapes are known. The compiled
+        function is used between tier reassignments; reassignment itself is
+        a graph-break boundary and runs eagerly.
+
+        Args:
+            **compile_kwargs: forwarded to ``torch.compile`` (e.g.
+                ``mode="reduce-overhead"``, ``fullgraph=False``).
+        """
+        compile_kwargs.setdefault("fullgraph", False)
+        self._compiled_materialize = torch.compile(self._materialize_impl, **compile_kwargs)
 
     def set_codebooks(self, k_codebook, v_codebook=None) -> None:
         """Attach trained PQ codebooks for the TIER_PQ path.
@@ -576,9 +591,15 @@ class TieredKVCache(DynamicCache):
     def _materialize(self, layer_idx: int) -> tuple[Tensor, Tensor]:
         """Hot path: return K, V in ascending position order.
 
-        K is already post-RoPE (stored that way or re-RoPE'd during the last
-        ``apply_tier_assignment``). Just concatenate the segments.
+        Delegates to ``_compiled_materialize`` if ``enable_compile()`` was
+        called, otherwise falls through to ``_materialize_impl``.
         """
+        if self._compiled_materialize is not None:
+            return self._compiled_materialize(layer_idx)
+        return self._materialize_impl(layer_idx)
+
+    def _materialize_impl(self, layer_idx: int) -> tuple[Tensor, Tensor]:
+        """Actual materialize logic (compilable)."""
         state = self._layers[layer_idx]
         parts_k, parts_v = self._assemble_parts(state, want_positions=False)
         if not parts_k:
