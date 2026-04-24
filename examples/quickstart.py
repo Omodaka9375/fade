@@ -89,6 +89,8 @@ def main():
     print(f"Loading {MODEL_ID} on {DEVICE}...")
     model, tokenizer = load_model(MODEL_ID, device_map=DEVICE, dtype=DTYPE, attn_impl="eager")
 
+    num_layers = model.config.num_hidden_layers
+
     # Baseline.
     base_kv, base_text, prompt_tokens = run_baseline(model, tokenizer)
     print(f"\nPrompt: {prompt_tokens} tokens, generating {MAX_NEW} tokens")
