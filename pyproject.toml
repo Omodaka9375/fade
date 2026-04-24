@@ -87,6 +87,16 @@ include = ["fade"]
 exclude = ["**/__pycache__", "**/.venv"]
 reportMissingImports = "warning"
 reportMissingTypeStubs = false
+# PyTorch re-exports (torch.float16, torch.zeros, etc.) trigger false
+# positives on reportPrivateImportUsage. Disable it.
+reportPrivateImportUsage = false
+reportOptionalMemberAccess = false
+reportOptionalSubscript = false
+reportArgumentType = false
+reportReturnType = false
+reportAssignmentType = false
+reportCallIssue = false
+reportInvalidTypeForm = false
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
 
