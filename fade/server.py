@@ -83,6 +83,8 @@ def _build_app():
         from fade.tracker import AttentionTracker
 
         # Build prompt from messages.
+        if _tokenizer is None or _model is None:
+            raise RuntimeError("Server not initialized. Call main() first.")
         if hasattr(_tokenizer, "apply_chat_template"):
             prompt = _tokenizer.apply_chat_template(
                 [{"role": m.role, "content": m.content} for m in req.messages],
