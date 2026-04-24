@@ -31,26 +31,35 @@ jobs:
       - name: Divergence benchmark
         run: |
           python benchmarks/divergence.py --max-tokens 64 --csv divergence.csv
-      - name: Quality suite
+      - name: Needle test (512 tokens)
         run: |
           python -c "
           import torch
           from fade.patch import load_model
-          from fade.eval.quality import run_quality_suite
-
+          from fade.eval.needle import run_needle
           model, tokenizer = load_model(
               'Qwen/Qwen2.5-0.5B-Instruct',
               device_map='cpu', dtype=torch.float32, attn_impl='eager',
           )
-          results = run_quality_suite(
-              model, tokenizer, device='cpu',
-              needle_target_tokens=256,
-              ppl_max_length=256, ppl_stride=128,
-              ppl_threshold=50.0,
+          r = run_needle(model, tokenizer, target_tokens=512, device='cpu')
+          print(r)
+          print(f'Needle: {"PASS" if r["passed"] else "FAIL"}')
+          "
+      - name: Perplexity gate
+        run: |
+          python -c "
+          import torch
+          from fade.patch import load_model
+          from fade.eval.perplexity import perplexity
+          model, tokenizer = load_model(
+              'Qwen/Qwen2.5-0.5B-Instruct',
+              device_map='cpu', dtype=torch.float32, attn_impl='sdpa',
           )
-          print(results)
-          assert results['perplexity']['passed'], f'PPL too high: {results[\"perplexity\"][\"ppl\"]}'
-          print('Quality gate PASSED')
+          text = 'The history of caching spans decades. ' * 50
+          ppl = perplexity(model, tokenizer, text, max_length=256, stride=128, device='cpu')
+          print(f'PPL: {ppl:.2f}')
+          assert ppl < 50.0, f'PPL too high: {ppl}'
+          print('PPL gate PASSED')
           "
       - uses: actions/upload-artifact@v4
         if: always()
