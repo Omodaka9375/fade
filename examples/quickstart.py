@@ -79,7 +79,7 @@ def run_tiered(model, tokenizer, config, label):
             break
 
     kv = cache.compressed_storage_bytes() / (1024 * 1024)
-    all_tokens = torch.cat([input_ids] + generated, dim=-1)
+    all_tokens = torch.cat([input_ids, *generated], dim=-1)
     text = tokenizer.decode(all_tokens[0, input_ids.shape[1] :], skip_special_tokens=True)
     return kv, text
 
@@ -127,7 +127,7 @@ def main():
 
     # Summary.
     print(f"\n{'=' * 60}")
-    print(f"  Summary")
+    print("  Summary")
     print(f"{'=' * 60}")
     print(f"  Baseline:   {base_kv:.2f} MiB")
     print(f"  Safe:       {safe_kv:.2f} MiB  ({100 * (1 - safe_kv / base_kv):.0f}% smaller)")
