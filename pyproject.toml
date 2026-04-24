@@ -9,7 +9,7 @@ description = "FADE: Frequency-Adaptive Decay Encoding — attention-aware tiere
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "FADE" }]
+authors = [{ name = "Omodaka9375", email = "branislav.djalic@gmail.com" }]
 keywords = ["llm", "inference", "kv-cache", "quantization", "transformers"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -52,9 +52,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/fade-kv/fade"
-Issues = "https://github.com/fade-kv/fade/issues"
-Changelog = "https://github.com/fade-kv/fade/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Omodaka9375/fade"
+Issues = "https://github.com/Omodaka9375/fade/issues"
+Changelog = "https://github.com/Omodaka9375/fade/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
