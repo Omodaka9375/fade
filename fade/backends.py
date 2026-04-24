@@ -98,12 +98,13 @@ class RotatedINT4Backend:
     """
 
     head_dim: int = 64
+    bits: int = 4
     seed: int = 42
     _R: Any = None  # cached rotation matrix
 
     @property
     def name(self) -> str:
-        return "rotated_int4"
+        return f"rotated_int{self.bits}"
 
     def _get_R(self, device: torch.device | None = None) -> Tensor:
         if self._R is None:
@@ -118,7 +119,7 @@ class RotatedINT4Backend:
     def compress_k(self, k: Tensor) -> dict[str, Tensor]:
         from fade.rotated_quant import rotated_quant_k
 
-        packed, scale = rotated_quant_k(k, self._get_R(k.device))
+        packed, scale = rotated_quant_k(k, self._get_R(k.device), bits=self.bits)
         return {"packed": packed, "scale": scale}
 
     def decompress_k(
@@ -130,13 +131,14 @@ class RotatedINT4Backend:
             compressed["packed"],
             compressed["scale"],
             self._get_R(compressed["packed"].device),
+            bits=self.bits,
             dtype=dtype,
         )
 
     def compress_v(self, v: Tensor) -> dict[str, Tensor]:
         from fade.rotated_quant import rotated_quant_v
 
-        packed, scale = rotated_quant_v(v, self._get_R(v.device))
+        packed, scale = rotated_quant_v(v, self._get_R(v.device), bits=self.bits)
         return {"packed": packed, "scale": scale}
 
     def decompress_v(
@@ -148,6 +150,7 @@ class RotatedINT4Backend:
             compressed["packed"],
             compressed["scale"],
             self._get_R(compressed["packed"].device),
+            bits=self.bits,
             dtype=dtype,
         )
 

@@ -22,9 +22,70 @@ from fade.quant import _pack_int4_last_dim, _unpack_int4_last_dim
 
 # --- knobs ------------------------------------------------------------------ #
 DEFAULT_SEED: int = 42
-INT4_MIN: int = -8
-INT4_MAX: int = 7
 EPS: float = 1e-8
+
+# Bit-width parameters: (min_val, max_val)
+_BIT_PARAMS: dict[int, tuple[int, int]] = {
+    4: (-8, 7),
+    3: (-4, 3),
+    2: (-2, 1),
+}
+
+
+def _pack_int2_last_dim(q: Tensor) -> Tensor:
+    """Pack 4 INT2 values per uint8 byte along the last dim.
+
+    Values must be in [-2, 1]. Last dim must be divisible by 4.
+    Layout: byte = (v0 << 6) | (v1 << 4) | (v2 << 2) | v3
+    """
+    if q.shape[-1] % 4 != 0:
+        raise ValueError(f"last dim must be divisible by 4 for INT2 packing, got {q.shape[-1]}")
+    q_u = (q.to(torch.int8) & 0x3).to(torch.uint8)  # 2-bit unsigned [0..3]
+    a = q_u[..., 0::4]
+    b = q_u[..., 1::4]
+    c = q_u[..., 2::4]
+    d = q_u[..., 3::4]
+    return (a << 6) | (b << 4) | (c << 2) | d
+
+
+def _unpack_int2_last_dim(packed: Tensor) -> Tensor:
+    """Inverse of _pack_int2_last_dim. Returns int8 with values in [-2, 1]."""
+    a = ((packed >> 6) & 0x3).to(torch.int8)
+    b = ((packed >> 4) & 0x3).to(torch.int8)
+    c = ((packed >> 2) & 0x3).to(torch.int8)
+    d = (packed & 0x3).to(torch.int8)
+    # Sign-extend: values >= 2 are negative in 2-bit two's complement.
+    a = torch.where(a >= 2, a - 4, a)
+    b = torch.where(b >= 2, b - 4, b)
+    c = torch.where(c >= 2, c - 4, c)
+    d = torch.where(d >= 2, d - 4, d)
+    out_shape = list(packed.shape)
+    out_shape[-1] *= 4
+    out = torch.empty(out_shape, dtype=torch.int8, device=packed.device)
+    out[..., 0::4] = a
+    out[..., 1::4] = b
+    out[..., 2::4] = c
+    out[..., 3::4] = d
+    return out
+
+
+def _pack(q: Tensor, bits: int) -> Tensor:
+    """Pack quantized int8 tensor to uint8 at the given bit width."""
+    if bits == 4:
+        return _pack_int4_last_dim(q)
+    if bits == 2:
+        return _pack_int2_last_dim(q)
+    # 3-bit: no packing yet, store as int8.
+    return q.to(torch.int8)
+
+
+def _unpack(packed: Tensor, bits: int) -> Tensor:
+    """Unpack uint8 tensor back to int8 at the given bit width."""
+    if bits == 4:
+        return _unpack_int4_last_dim(packed)
+    if bits == 2:
+        return _unpack_int2_last_dim(packed)
+    return packed.to(torch.int8)
 
 
 def _random_orthogonal(dim: int, seed: int = DEFAULT_SEED) -> Tensor:
@@ -38,28 +99,26 @@ def _random_orthogonal(dim: int, seed: int = DEFAULT_SEED) -> Tensor:
 def rotated_quant_k(
     k: Tensor,
     R: Tensor,
+    bits: int = 4,
 ) -> tuple[Tensor, Tensor]:
-    """Rotate and quantize K to INT4 with per-channel scale (like standard K quant).
-
-    The rotation spreads outliers before the standard per-channel quantization,
-    giving better quality at the same storage as symmetric INT4.
+    """Rotate and quantize K with per-channel scale.
 
     Args:
         k: [B, H, S, D] K cache tensors.
         R: [D, D] orthogonal rotation matrix.
+        bits: quantization bit width (2, 3, or 4).
 
     Returns:
-        (packed_uint8 [B,H,S,D//2], scale [B,H,1,D]) — same format as quant_k_int4.
+        (packed, scale) where packed is bit-packed uint8 and scale is [B,H,1,D].
     """
-    # Rotate along the head_dim axis.
+    qmin, qmax = _BIT_PARAMS[bits]
     k_f = k.float()
-    k_rot = k_f @ R.to(k.device).T  # [B, H, S, D]
+    k_rot = k_f @ R.to(k.device).T
 
-    # Standard per-channel symmetric INT4 on the rotated tensor.
-    absmax = k_rot.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)  # [B, H, 1, D]
-    scale = absmax / INT4_MAX
-    q = (k_rot / scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
-    packed = _pack_int4_last_dim(q)
+    absmax = k_rot.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)
+    scale = absmax / qmax
+    q = (k_rot / scale).round().clamp(qmin, qmax).to(torch.int8)
+    packed = _pack(q, bits)
     return packed, scale.to(k.dtype)
 
 
@@ -67,35 +126,38 @@ def rotated_dequant_k(
     packed: Tensor,
     scale: Tensor,
     R: Tensor,
+    bits: int = 4,
     dtype: torch.dtype = torch.float16,
 ) -> Tensor:
     """Inverse of rotated_quant_k."""
-    q = _unpack_int4_last_dim(packed)
+    q = _unpack(packed, bits)
     k_rot = q.to(dtype) * scale.to(dtype)
-    # Inverse rotate.
     return (k_rot.float() @ R.to(k_rot.device)).to(dtype)
 
 
 def rotated_quant_v(
     v: Tensor,
     R: Tensor,
+    bits: int = 4,
 ) -> tuple[Tensor, Tensor]:
-    """Rotate and quantize V to INT4 with per-token scale (like standard V quant).
+    """Rotate and quantize V with per-token scale.
 
     Args:
         v: [B, H, S, D] V cache tensors.
         R: [D, D] orthogonal rotation matrix.
+        bits: quantization bit width (2, 3, or 4).
 
     Returns:
-        (packed_uint8 [B,H,S,D//2], scale [B,H,S,1]) — same format as quant_v_int4.
+        (packed, scale) where packed is bit-packed uint8 and scale is [B,H,S,1].
     """
+    qmin, qmax = _BIT_PARAMS[bits]
     v_f = v.float()
     v_rot = v_f @ R.to(v.device).T
 
-    absmax = v_rot.abs().amax(dim=-1, keepdim=True).clamp(min=EPS)  # [B, H, S, 1]
-    scale = absmax / INT4_MAX
-    q = (v_rot / scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
-    packed = _pack_int4_last_dim(q)
+    absmax = v_rot.abs().amax(dim=-1, keepdim=True).clamp(min=EPS)
+    scale = absmax / qmax
+    q = (v_rot / scale).round().clamp(qmin, qmax).to(torch.int8)
+    packed = _pack(q, bits)
     return packed, scale.to(v.dtype)
 
 
@@ -103,10 +165,11 @@ def rotated_dequant_v(
     packed: Tensor,
     scale: Tensor,
     R: Tensor,
+    bits: int = 4,
     dtype: torch.dtype = torch.float16,
 ) -> Tensor:
     """Inverse of rotated_quant_v."""
-    q = _unpack_int4_last_dim(packed)
+    q = _unpack(packed, bits)
     v_rot = q.to(dtype) * scale.to(dtype)
     return (v_rot.float() @ R.to(v_rot.device)).to(dtype)
 
