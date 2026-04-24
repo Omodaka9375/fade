@@ -65,11 +65,11 @@ def test_turbo_backend_round_trip():
     """Full compress/decompress round-trip with TurboQuant."""
     try:
         b = get_backend("turbo", head_dim=D, bits=4)
+        k, v = _random_kv()
+        ck = b.compress_k(k)  # triggers lazy import
     except ImportError:
         pytest.skip("turboquant-kv not installed")
 
-    k, v = _random_kv()
-    ck = b.compress_k(k)
     k_hat = b.decompress_k(ck, dtype=DTYPE)
     assert k_hat.shape == k.shape
     assert torch.isfinite(k_hat).all()
