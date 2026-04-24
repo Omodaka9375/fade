@@ -370,7 +370,7 @@ class TieredKVCache(DynamicCache):
 
     def get_mask_sizes(
         self,
-        cache_position: Tensor,
+        cache_position: Tensor | int,
         layer_idx: int = 0,
     ) -> tuple[int, int]:
         """Return (kv_length, kv_offset) for the attention mask.
@@ -378,7 +378,10 @@ class TieredKVCache(DynamicCache):
         The base ``Cache`` delegates to ``self.layers[layer_idx]``, which we
         don't populate. Override so the mask sees the real KV length.
         """
-        query_length = int(cache_position.shape[0])
+        if isinstance(cache_position, int):
+            query_length = cache_position
+        else:
+            query_length = int(cache_position.shape[0])
         kv_length = self.get_seq_length(layer_idx) + query_length
         return kv_length, 0
 
