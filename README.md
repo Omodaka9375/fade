@@ -142,11 +142,17 @@ Two modes:
 
 ## Performance
 
+- **Fused INT4 FlashAttention kernel** — single Triton kernel reads packed INT4 K/V, computes attention with online softmax, writes fp16 output. Never materializes fp16 K/V. **4.9× faster** than the old dequant+SDPA path, within 1.4× of pure fp16 FlashAttention on RTX 3060.
 - **Pre-allocated FP16 buffer** — doubling buffer eliminates `torch.cat` on every decode step.
 - **torch.compile** — `cache.enable_compile()` wraps `_materialize` between graph-break boundaries.
-- **Triton INT4 kernel** — `int4_sdpa(q, k_packed, k_scale, v_packed, v_scale, force_triton=True)` runs fused INT4 unpack on CUDA. Exact parity validated on RTX 3060.
 - **Dequant-cache age eviction** — `cache.max_dequant_age = N` periodically refreshes cached dequant buffers.
 - **Benchmarks** — `python benchmarks/tps.py` (decode throughput), `python benchmarks/divergence.py` (quality).
+
+```python
+# Use the fused kernel directly:
+from fade.kernels.fused_int4_attn import fused_int4_sdpa
+out = fused_int4_sdpa(q, k_packed, k_scale, v_packed, v_scale)
+```
 
 ## Checkpointing
 
@@ -198,7 +204,7 @@ fade/
   patch.py           # load_model, create_tiered_cache, forward_with_tracking
   codebook.py        # PQ codebook train/encode/decode
   telemetry.py       # Structured telemetry + exporters
-  kernels/           # Triton INT4 unpack kernel + torch fallback
+  kernels/           # Fused INT4 FlashAttention kernel + unpack kernel + fallback
   serving/           # vLLM / SGLang adapter stubs
   eval/              # Perplexity, needle, quality suite
 examples/            # quickstart.py
@@ -215,7 +221,7 @@ tests/               # 136 tests, all CPU, no downloads
 3. **Memory**: use `cache.compressed_storage_bytes()`, not `nvidia-smi`.
 4. **RoPE precision**: all math in float32, cast through model dtype to match rounding.
 5. **Hybrid models**: Qwen 3.5/3.6 DeltaNet layers are auto-skipped — only full-attention layers are tiered.
-6. **Triton kernel**: opt-in via `force_triton=True`. Run `check_parity()` on your hardware first.
+6. **Triton kernels**: fused attention via `fused_int4_sdpa()`, unpack-only via `int4_sdpa(force_triton=True)`. Run `check_fused_parity()` to validate on your hardware.
 
 ## License
 
