@@ -1,0 +1,59 @@
+name: nightly quality gate
+
+on:
+  schedule:
+    - cron: "0 4 * * *"  # 04:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  quality:
+    name: quality gate (Qwen2.5-0.5B)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev,eval]"
+      - name: Download model
+        run: |
+          python -c "
+          from transformers import AutoModelForCausalLM, AutoTokenizer
+          AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
+          AutoTokenizer.from_pretrained('Qwen/Qwen2.5-0.5B-Instruct')
+          "
+      - name: Divergence benchmark
+        run: |
+          python benchmarks/divergence.py --max-tokens 64 --csv divergence.csv
+      - name: Quality suite
+        run: |
+          python -c "
+          import torch
+          from fade.patch import load_model
+          from fade.eval.quality import run_quality_suite
+
+          model, tokenizer = load_model(
+              'Qwen/Qwen2.5-0.5B-Instruct',
+              device_map='cpu', dtype=torch.float32, attn_impl='eager',
+          )
+          results = run_quality_suite(
+              model, tokenizer, device='cpu',
+              needle_target_tokens=256,
+              ppl_max_length=256, ppl_stride=128,
+              ppl_threshold=50.0,
+          )
+          print(results)
+          assert results['perplexity']['passed'], f'PPL too high: {results[\"perplexity\"][\"ppl\"]}'
+          print('Quality gate PASSED')
+          "
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-results
+          path: divergence.csv
