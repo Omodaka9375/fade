@@ -432,6 +432,12 @@ class TieredKVCache(DynamicCache):
             ):
                 if t is not None:
                     total += int(t.element_size() * t.numel())
+            # Backend-compressed dicts (TurboQuant etc.).
+            for d in (state.backend_k, state.backend_v):
+                if isinstance(d, dict):
+                    for v in d.values():
+                        if isinstance(v, Tensor):
+                            total += int(v.element_size() * v.numel())
         return total
 
     # ------------------------------------------------------------------ #
