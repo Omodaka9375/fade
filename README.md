@@ -79,6 +79,17 @@ cache = create_tiered_cache(model, config=FadeConfig(
 ))
 ```
 
+### Rotated 2-bit backend (~6× compression)
+
+```python
+from fade.backends import get_backend
+
+cache = create_tiered_cache(model, config=FadeConfig.safe(),
+    quant_backend=get_backend("rotated", head_dim=64, bits=2))
+```
+
+Random orthogonal rotation spreads per-channel outliers before quantization, making 2-bit viable. Uses native PyTorch — no external dependencies.
+
 ### Manual decode with tier reassignment
 
 ```python
@@ -168,8 +179,10 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 | Config | Model | KV cache | Compression |
 |--------|-------|----------|-------------|
-| Phase 1-A | Qwen2.5-0.5B, 782 tok | 4.0 MiB | **67% smaller**, 100% token match |
-| Phase 2 H2O | Qwen2.5-3B, 595 tok | 6.3 MiB | **79% smaller**, coherent output |
+| INT4 symmetric | Qwen2.5-0.5B, 2K tok | 6.78 MiB | **3.5×** |
+| Rotated 4-bit | Qwen2.5-0.5B, 2K tok | 6.78 MiB | **3.5×** (better quality) |
+| Rotated 2-bit | Qwen2.5-0.5B, 2K tok | 3.88 MiB | **6.2×** |
+| Phase 2 H2O | Qwen2.5-3B, 595 tok | 6.3 MiB | **5×** (with eviction) |
 
 ## Project layout
 

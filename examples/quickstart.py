@@ -12,6 +12,7 @@ import torch
 from transformers import DynamicCache
 
 from fade import FadeConfig, create_tiered_cache
+from fade.backends import get_backend
 from fade.eval.memory import cache_storage_bytes
 from fade.patch import forward_with_tracking, load_model
 from fade.policy import reassign_tiers, reassign_tiers_by_position
@@ -125,14 +126,41 @@ def main():
     print(f"{'=' * 60}")
     print(agg_text[:200])
 
+    # Rotated 2-bit (6x compression).
+    head_dim = model.config.hidden_size // model.config.num_attention_heads
+    enc_r = tokenizer(PROMPT, return_tensors="pt").to(DEVICE)
+    rot2_cache = create_tiered_cache(
+        model,
+        dtype=DTYPE,
+        config=FadeConfig.safe(),
+        quant_backend=get_backend("rotated", head_dim=head_dim, bits=2),
+    )
+    tracker_r = AttentionTracker(num_layers=num_layers)
+    out_r = forward_with_tracking(model, enc_r.input_ids, rot2_cache, tracker=tracker_r)
+    next_tok = out_r.logits[:, -1:, :].argmax(dim=-1)
+    for step in range(MAX_NEW - 1):
+        out_r = forward_with_tracking(model, next_tok, rot2_cache, tracker=tracker_r)
+        next_tok = out_r.logits[:, -1:, :].argmax(dim=-1)
+        if (step + 1) % REASSIGN_EVERY == 0:
+            reassign_tiers_by_position(rot2_cache, num_layers)
+        if tokenizer.eos_token_id is not None and next_tok.item() == tokenizer.eos_token_id:
+            break
+    rot2_kv = rot2_cache.compressed_storage_bytes() / (1024 * 1024)
+    print(f"\n{'=' * 60}")
+    print(
+        f"  Rotated 2-bit (~6x) |  kv_cache = {rot2_kv:.2f} MiB  ({100 * (1 - rot2_kv / base_kv):.0f}% smaller)"
+    )
+    print(f"{'=' * 60}")
+
     # Summary.
     print(f"\n{'=' * 60}")
     print("  Summary")
     print(f"{'=' * 60}")
-    print(f"  Baseline:   {base_kv:.2f} MiB")
-    print(f"  Safe:       {safe_kv:.2f} MiB  ({100 * (1 - safe_kv / base_kv):.0f}% smaller)")
-    print(f"  Balanced:   {bal_kv:.2f} MiB  ({100 * (1 - bal_kv / base_kv):.0f}% smaller)")
-    print(f"  Aggressive: {agg_kv:.2f} MiB  ({100 * (1 - agg_kv / base_kv):.0f}% smaller)")
+    print(f"  Baseline:      {base_kv:.2f} MiB")
+    print(f"  Safe INT4:     {safe_kv:.2f} MiB  ({base_kv / safe_kv:.1f}x)")
+    print(f"  Balanced:      {bal_kv:.2f} MiB  ({base_kv / bal_kv:.1f}x)")
+    print(f"  Aggressive:    {agg_kv:.2f} MiB  ({base_kv / agg_kv:.1f}x)")
+    print(f"  Rotated 2-bit: {rot2_kv:.2f} MiB  ({base_kv / rot2_kv:.1f}x)")
 
 
 if __name__ == "__main__":
