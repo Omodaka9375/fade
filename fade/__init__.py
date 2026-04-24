@@ -10,7 +10,7 @@ from fade.policy import reassign_tiers
 from fade.tracker import AttentionTracker
 
 try:
-    __version__ = _pkg_version("fade")
+    __version__ = _pkg_version("fade-kv")
 except PackageNotFoundError:  # editable install without metadata yet
     __version__ = "0.0.0+unknown"
 
