@@ -40,6 +40,8 @@ eval = ["datasets>=2.20", "accelerate>=0.34"]
 codebook = ["scikit-learn>=1.4"]
 # TurboQuant rotation-based quantization backend (ICLR 2026).
 turbo = ["turboquant-kv>=1.0"]
+# Standalone OpenAI-compatible inference server.
+server = ["fastapi>=0.100", "uvicorn>=0.20", "pydantic>=2.0"]
 # Future serving adapters (vLLM/SGLang). Kept empty so the extra exists but
 # doesn't pull heavy deps into default installs.
 serving = []
@@ -52,6 +54,9 @@ dev = [
     "pre-commit>=3.7",
     "build>=1.2",
 ]
+
+[project.scripts]
+fade-server = "fade.server:main"
 
 [project.urls]
 Homepage = "https://github.com/Omodaka9375/fade"
