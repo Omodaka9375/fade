@@ -111,12 +111,15 @@ for step in range(max_tokens):
 
 ## Eviction policies
 
-| Policy    | Quality | Speed  | Needs attention?   |
-|-----------|---------|--------|--------------------|
-| `h2o`     | Best    | Normal | Yes (prefill only) |
-| `ema`     | Good    | Normal | Yes (decode only)  |
-| `position`| Fair    | Fast   | No                 |
-| `learned` | Good*   | Fast   | No                 |
+| Policy     | Quality | Speed  | Needs attention?   |
+|------------|---------|--------|--------------------|
+| `h2o`      | Best    | Normal | Yes (prefill only) |
+| `ema`      | Good    | Normal | Yes (decode only)  |
+| `adaptive` | Good    | Normal | Yes (decode EMA)   |
+| `position` | Fair    | Fast   | No                 |
+| `learned`  | Good*   | Fast   | No                 |
+
+`adaptive` splits middle tokens by attention score: high→INT4, low→INT2, lowest→evict.
 
 *Learned policy requires a trained checkpoint: `python scripts/train_eviction_mlp.py`
 

@@ -1,8 +1,7 @@
-"""FADE quickstart: shows actual KV cache compression in action.
+"""FADE quickstart: all features in one script.
 
-The key: FADE compresses on tier reassignment, not just during generate().
-This script runs a manual decode loop with periodic reassignment so you
-can see the cache shrink in real time.
+Demonstrates presets, rotated 2-bit backend, adaptive bit allocation,
+and compression measurements with tier reassignment.
 
 Usage:
     python examples/quickstart.py
@@ -15,15 +14,13 @@ from fade import FadeConfig, create_tiered_cache
 from fade.backends import get_backend
 from fade.eval.memory import cache_storage_bytes
 from fade.patch import forward_with_tracking, load_model
-from fade.policy import reassign_tiers, reassign_tiers_by_position
+from fade.policy import reassign_tiers_adaptive, reassign_tiers_by_position
 from fade.tracker import AttentionTracker
 
 # --- config ----------------------------------------------------------------- #
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
-
-# Long prompt so there are enough tokens to compress.
 PROMPT = (
     "Explain the following topics in detail, one paragraph each:\n"
     "1. How CPU cache hierarchies work (L1, L2, L3)\n"
@@ -39,130 +36,90 @@ MAX_NEW = 128
 REASSIGN_EVERY = 32
 
 
-def run_baseline(model, tokenizer):
-    """Plain DynamicCache baseline."""
-    enc = tokenizer(PROMPT, return_tensors="pt").to(DEVICE)
-    cache = DynamicCache()
-    with torch.no_grad():
-        out = model.generate(**enc, past_key_values=cache, max_new_tokens=MAX_NEW, do_sample=False)
-    kv = cache_storage_bytes(cache) / (1024 * 1024)
-    text = tokenizer.decode(out[0, enc.input_ids.shape[1] :], skip_special_tokens=True)
-    return kv, text, enc.input_ids.shape[1]
-
-
-def run_tiered(model, tokenizer, config, label):
+def run_decode(model, tokenizer, cache, num_layers, policy="position", tracker=None):
     """Manual decode loop with tier reassignment."""
     enc = tokenizer(PROMPT, return_tensors="pt").to(DEVICE)
-    input_ids = enc.input_ids
-    num_layers = model.config.num_hidden_layers
-
-    cache = create_tiered_cache(model, dtype=DTYPE, config=config)
-    tracker = AttentionTracker(num_layers=num_layers)
-
-    # Prefill.
-    out = forward_with_tracking(model, input_ids, cache, tracker=tracker)
-    next_token = out.logits[:, -1:, :].argmax(dim=-1)
-    generated = [next_token]
-
-    # Decode with periodic reassignment.
+    if tracker is None:
+        tracker = AttentionTracker(num_layers=num_layers)
+    out = forward_with_tracking(model, enc.input_ids, cache, tracker=tracker)
+    next_tok = out.logits[:, -1:, :].argmax(dim=-1)
     for step in range(MAX_NEW - 1):
-        out = forward_with_tracking(model, next_token, cache, tracker=tracker)
-        next_token = out.logits[:, -1:, :].argmax(dim=-1)
-        generated.append(next_token)
-
+        out = forward_with_tracking(model, next_tok, cache, tracker=tracker)
+        next_tok = out.logits[:, -1:, :].argmax(dim=-1)
         if (step + 1) % REASSIGN_EVERY == 0:
-            if config.eviction_policy == "position":
-                reassign_tiers_by_position(cache, num_layers)
+            if policy == "adaptive":
+                reassign_tiers_adaptive(cache, tracker, num_layers, high_pct=0.5)
             else:
-                reassign_tiers(cache, tracker, num_layers)
-
-        if tokenizer.eos_token_id is not None and next_token.item() == tokenizer.eos_token_id:
+                reassign_tiers_by_position(cache, num_layers)
+        if tokenizer.eos_token_id is not None and next_tok.item() == tokenizer.eos_token_id:
             break
-
-    kv = cache.compressed_storage_bytes() / (1024 * 1024)
-    all_tokens = torch.cat([input_ids, *generated], dim=-1)
-    text = tokenizer.decode(all_tokens[0, input_ids.shape[1] :], skip_special_tokens=True)
-    return kv, text
+    return cache.compressed_storage_bytes() / (1024 * 1024)
 
 
 def main():
     print(f"Loading {MODEL_ID} on {DEVICE}...")
     model, tokenizer = load_model(MODEL_ID, device_map=DEVICE, dtype=DTYPE, attn_impl="eager")
-
     num_layers = model.config.num_hidden_layers
+    head_dim = model.config.hidden_size // model.config.num_attention_heads
 
     # Baseline.
-    base_kv, base_text, prompt_tokens = run_baseline(model, tokenizer)
-    print(f"\nPrompt: {prompt_tokens} tokens, generating {MAX_NEW} tokens")
-    print(f"\n{'=' * 60}")
-    print(f"  Baseline (FP16)  |  kv_cache = {base_kv:.2f} MiB")
-    print(f"{'=' * 60}")
-    print(base_text[:200])
+    enc = tokenizer(PROMPT, return_tensors="pt").to(DEVICE)
+    base_cache = DynamicCache()
+    with torch.no_grad():
+        model.generate(**enc, past_key_values=base_cache, max_new_tokens=MAX_NEW, do_sample=False)
+    base_kv = cache_storage_bytes(base_cache) / (1024 * 1024)
 
-    # Safe preset.
-    safe_kv, safe_text = run_tiered(
-        model, tokenizer, FadeConfig.safe().with_overrides(eviction_policy="position"), "Safe"
-    )
-    print(f"\n{'=' * 60}")
-    print(
-        f"  Safe (~3-4x)     |  kv_cache = {safe_kv:.2f} MiB  ({100 * (1 - safe_kv / base_kv):.0f}% smaller)"
-    )
-    print(f"{'=' * 60}")
-    print(safe_text[:200])
+    # Safe INT4.
+    safe_cache = create_tiered_cache(model, dtype=DTYPE, config=FadeConfig.safe())
+    safe_kv = run_decode(model, tokenizer, safe_cache, num_layers)
 
-    # Balanced preset.
-    bal_kv, bal_text = run_tiered(model, tokenizer, FadeConfig.balanced(), "Balanced")
-    print(f"\n{'=' * 60}")
-    print(
-        f"  Balanced (~5x)   |  kv_cache = {bal_kv:.2f} MiB  ({100 * (1 - bal_kv / base_kv):.0f}% smaller)"
+    # Balanced (eviction).
+    bal_cache = create_tiered_cache(
+        model, dtype=DTYPE, config=FadeConfig.balanced().with_overrides(eviction_policy="position")
     )
-    print(f"{'=' * 60}")
-    print(bal_text[:200])
+    bal_kv = run_decode(model, tokenizer, bal_cache, num_layers)
 
-    # Aggressive preset.
-    agg_kv, agg_text = run_tiered(model, tokenizer, FadeConfig.aggressive(), "Aggressive")
-    print(f"\n{'=' * 60}")
-    print(
-        f"  Aggressive (~7x) |  kv_cache = {agg_kv:.2f} MiB  ({100 * (1 - agg_kv / base_kv):.0f}% smaller)"
-    )
-    print(f"{'=' * 60}")
-    print(agg_text[:200])
-
-    # Rotated 2-bit (6x compression).
-    head_dim = model.config.hidden_size // model.config.num_attention_heads
-    enc_r = tokenizer(PROMPT, return_tensors="pt").to(DEVICE)
-    rot2_cache = create_tiered_cache(
+    # Rotated 2-bit.
+    rot_cache = create_tiered_cache(
         model,
         dtype=DTYPE,
         config=FadeConfig.safe(),
         quant_backend=get_backend("rotated", head_dim=head_dim, bits=2),
     )
-    tracker_r = AttentionTracker(num_layers=num_layers)
-    out_r = forward_with_tracking(model, enc_r.input_ids, rot2_cache, tracker=tracker_r)
-    next_tok = out_r.logits[:, -1:, :].argmax(dim=-1)
-    for step in range(MAX_NEW - 1):
-        out_r = forward_with_tracking(model, next_tok, rot2_cache, tracker=tracker_r)
-        next_tok = out_r.logits[:, -1:, :].argmax(dim=-1)
-        if (step + 1) % REASSIGN_EVERY == 0:
-            reassign_tiers_by_position(rot2_cache, num_layers)
-        if tokenizer.eos_token_id is not None and next_tok.item() == tokenizer.eos_token_id:
-            break
-    rot2_kv = rot2_cache.compressed_storage_bytes() / (1024 * 1024)
-    print(f"\n{'=' * 60}")
-    print(
-        f"  Rotated 2-bit (~6x) |  kv_cache = {rot2_kv:.2f} MiB  ({100 * (1 - rot2_kv / base_kv):.0f}% smaller)"
+    rot_kv = run_decode(model, tokenizer, rot_cache, num_layers)
+
+    # Adaptive bit allocation (E1).
+    ada_cache = create_tiered_cache(
+        model,
+        dtype=DTYPE,
+        config=FadeConfig(phase="2", int4_budget=200, int2_budget=200, eviction_policy="position"),
     )
-    print(f"{'=' * 60}")
+    ada_kv = run_decode(model, tokenizer, ada_cache, num_layers, policy="adaptive")
+
+    # Aggressive.
+    agg_cache = create_tiered_cache(
+        model,
+        dtype=DTYPE,
+        config=FadeConfig.aggressive().with_overrides(eviction_policy="position"),
+    )
+    agg_kv = run_decode(model, tokenizer, agg_cache, num_layers)
 
     # Summary.
     print(f"\n{'=' * 60}")
-    print("  Summary")
+    print(f"  FADE Compression Results — {MODEL_ID}")
     print(f"{'=' * 60}")
-    print(f"  Baseline:      {base_kv:.2f} MiB")
-    print(f"  Safe INT4:     {safe_kv:.2f} MiB  ({base_kv / safe_kv:.1f}x)")
-    print(f"  Balanced:      {bal_kv:.2f} MiB  ({base_kv / bal_kv:.1f}x)")
-    print(f"  Aggressive:    {agg_kv:.2f} MiB  ({base_kv / agg_kv:.1f}x)")
-    print(f"  Rotated 2-bit: {rot2_kv:.2f} MiB  ({base_kv / rot2_kv:.1f}x)")
+    print(f"  {'Config':<25} {'KV MiB':>8} {'Ratio':>8}")
+    print(f"  {'-' * 25} {'-' * 8} {'-' * 8}")
+    for label, kv in [
+        ("Baseline FP16", base_kv),
+        ("Safe (INT4)", safe_kv),
+        ("Rotated 2-bit", rot_kv),
+        ("Balanced (eviction)", bal_kv),
+        ("Adaptive (E1)", ada_kv),
+        ("Aggressive", agg_kv),
+    ]:
+        ratio = base_kv / kv if kv > 0 else 0
+        print(f"  {label:<25} {kv:>7.2f} {ratio:>7.1f}x")
 
 
 if __name__ == "__main__":
