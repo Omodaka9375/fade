@@ -106,28 +106,40 @@ def score_sample(prediction: str, references: list[str], task: str) -> float:
 
 
 # --- data loading ----------------------------------------------------------- #
-def load_longbench_task(task: str, max_samples: int) -> list[dict]:
-    """Load a LongBench task from HuggingFace.
+# Local data directory (download data.zip from HuggingFace and unzip here).
+LONGBENCH_DATA_DIR: str = "benchmarks/longbench_data/data"
 
-    Tries multiple loading strategies in order:
-    1. ``load_dataset`` with ``trust_remote_code`` (datasets <= 3.2)
-    2. ``load_dataset`` without trust_remote_code (auto-converted Parquet)
-    3. Download ``data.zip`` and extract the JSONL
+
+def load_longbench_task(task: str, max_samples: int) -> list[dict]:
+    """Load a LongBench task.
+
+    Tries in order:
+    1. Local JSONL files in ``LONGBENCH_DATA_DIR``
+    2. ``load_dataset`` with ``trust_remote_code`` (datasets <= 3.2)
+    3. ``load_dataset`` without trust_remote_code (auto-Parquet)
     """
     import json
+    from pathlib import Path
 
     rows = None
 
-    # Strategy 1: trust_remote_code (works with datasets <= 3.2).
-    try:
-        from datasets import load_dataset
+    # Strategy 1: local JSONL (fastest, no network).
+    local_path = Path(LONGBENCH_DATA_DIR) / f"{task}.jsonl"
+    if local_path.exists():
+        with open(local_path, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
 
-        ds = load_dataset("THUDM/LongBench", task, split="test", trust_remote_code=True)
-        rows = list(ds)
-    except Exception:
-        pass
+    # Strategy 2: trust_remote_code (works with datasets <= 3.2).
+    if rows is None:
+        try:
+            from datasets import load_dataset
 
-    # Strategy 2: plain load_dataset (newer datasets with auto-Parquet).
+            ds = load_dataset("THUDM/LongBench", task, split="test", trust_remote_code=True)
+            rows = list(ds)
+        except Exception:
+            pass
+
+    # Strategy 3: plain load_dataset (newer datasets with auto-Parquet).
     if rows is None:
         try:
             from datasets import load_dataset
@@ -137,27 +149,12 @@ def load_longbench_task(task: str, max_samples: int) -> list[dict]:
         except Exception:
             pass
 
-    # Strategy 3: download data.zip and extract the JSONL.
     if rows is None:
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError as e:
-            raise ImportError(
-                "LongBench evaluation requires `huggingface_hub`. "
-                "Install with: pip install fade-kv[eval]"
-            ) from e
-
-        import io
-        import zipfile
-
-        zip_path = hf_hub_download(
-            repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset"
+        raise RuntimeError(
+            f"Could not load LongBench task '{task}'. "
+            f"Download data.zip from https://huggingface.co/datasets/THUDM/LongBench "
+            f"and unzip to {LONGBENCH_DATA_DIR}/"
         )
-        with zipfile.ZipFile(zip_path) as zf:
-            jsonl_name = f"data/{task}.jsonl"
-            with zf.open(jsonl_name) as f:
-                text = io.TextIOWrapper(f, encoding="utf-8").read()
-                rows = [json.loads(line) for line in text.splitlines() if line.strip()]
 
     samples = []
     for i, row in enumerate(rows):
