@@ -64,6 +64,25 @@ xychart-beta
     bar [0.133, 0.189, 0.932]
 ```
 
+### How FADE compares (2026)
+
+| | **FADE** | **kvpress** (NVIDIA) | **TurboQuant** | **KVTC** |
+|---|---|---|---|---|
+| **Approach** | Tiered quant + eviction + re-RoPE | Token eviction (20+ scoring methods) | Rotation + optimal codebook | PCA + DP bit allocation + entropy coding |
+| **Compression** | 3.5–23× | 2–10× (eviction only) | 4–6× | 6–9× |
+| **Quantization** | INT4/INT2/PQ + rotated 2-bit | None (drops tokens) | 3–4 bit | 1–6 bit |
+| **Eviction** | H2O, EMA, position, adaptive, learned | 20+ methods (SnapKV, TOVA, etc.) | None | None |
+| **Re-RoPE** | ✅ StreamingLLM contiguous | ❌ | ❌ | ✅ (undo before PCA) |
+| **Fused kernel** | ✅ Triton INT4 FlashAttn | ❌ | ✅ Triton fused | ✅ Triton |
+| **HF generate()** | ✅ Drop-in | Pipeline only | ✅ Drop-in | ❌ |
+| **Serving** | ✅ fade-server (OpenAI API) | ❌ | ✅ turboquant-server | ❌ |
+| **Hybrid models** | ✅ Qwen 3.5 DeltaNet skip | ❌ | ❌ | ❌ |
+| **Per-sequence batching** | ✅ Ragged tiers | ❌ | ❌ | ❌ |
+| **Stars** | New | 1K+ | 30–40 | 11 |
+| **Install** | `pip install fade-kv` | `pip install kvpress` | `pip install turboquant` | From source |
+
+**FADE's unique advantage**: only system that combines quantization + attention-aware eviction + correct re-RoPE in one drop-in cache.
+
 ## Install
 
 **From PyPI:**
