@@ -277,6 +277,18 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 > Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 4.98.
 
+### DGX Spark — Llama-3.1-8B-Instruct (2048 tokens)
+
+| Config | KV cache | Compression | Decode TPS |
+|--------|----------|:-----------:|:----------:|
+| Baseline FP16 | 256.00 MiB | 1.0× | 14.4 tok/s |
+| Safe (INT4) | 71.40 MiB | **3.6×** | 14.3 tok/s |
+| Rotated 2-bit | 40.47 MiB | **6.3×** | 14.3 tok/s |
+| Balanced (eviction) | 21.26 MiB | **12.0×** | 14.3 tok/s |
+| Aggressive | 10.91 MiB | **23.5×** | 14.3 tok/s |
+
+> Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 6.45. Llama-3.1 frequency-dependent RoPE scaling.
+
 > All DGX Spark benchmarks: NVIDIA DGX Spark (Grace Blackwell, 128 GB unified memory).
 
 ### RTX 3060 — Qwen2.5-0.5B-Instruct (2048 tokens)
