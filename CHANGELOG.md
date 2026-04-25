@@ -2,6 +2,27 @@
 All notable changes to FADE will be documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.6.0] — Phase 1 optimization (decode steady-state & reassignment quick wins)
+### Changed
+- **Quant**: branchless bit-arithmetic sign extension in INT4/INT2 unpack
+  (`torch.where` → `x - ((x & sign_bit) << 1)`).
+- **Quant**: multiply by `inv_scale` instead of dividing by `scale` in all
+  six quantization functions (INT4 K/V, INT2 K/V, rotated K/V).
+- **Quant**: `pad_to_group` uses single alloc + copy instead of alloc + `torch.cat`.
+- **RoPE**: `Llama3.inv_freq` and `Yarn.inv_freq` fully vectorized (eliminated
+  Python for-loops and per-dim `.item()` calls).
+- **RoPE**: `inv_freq` cached per `(device)` on every `RopeScheme` subclass.
+- **RoPE**: skip lossy fp32→model_dtype→fp32 round-trip for bf16 in
+  `compute_cos_sin`.
+- **Cache**: collapsed two `.item()` host/device syncs into one in both
+  `apply_tier_assignment` and the per-sequence variant.
+- **Cache**: FP16 pre-alloc buffer persisted across reassignments (reseeds
+  existing capacity instead of nulling and reallocating).
+- **Cache**: fused old/new cos/sin into a single batched `compute_cos_sin`
+  call during eviction re-RoPE (halves kernel launches).
+- **Policy**: single `argsort` + slice replaces two `topk` calls in
+  `_assign_one_layer`.
+
 ## [Unreleased]
 ### Added
 - `LICENSE` (Apache-2.0), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
