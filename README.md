@@ -317,6 +317,26 @@ tests/               # 136 tests, all CPU, no downloads
 5. **Hybrid models**: Qwen 3.5/3.6 DeltaNet layers are auto-skipped — only full-attention layers are tiered.
 6. **Triton kernels**: fused attention via `fused_int4_sdpa()`, unpack-only via `int4_sdpa(force_triton=True)`. Run `check_fused_parity()` to validate on your hardware.
 
+## Citations
+
+FADE builds on ideas from these papers (all independently reimplemented — see [NOTICE](NOTICE) for details):
+
+- **H2O** — Zhang et al., 2023. *Heavy-Hitter Oracle for Efficient Generative Inference of LLMs.* [arXiv:2306.14048](https://arxiv.org/abs/2306.14048)
+- **StreamingLLM** — Xiao et al., 2023. *Efficient Streaming Language Models with Attention Sinks.* [arXiv:2309.17453](https://arxiv.org/abs/2309.17453)
+- **KIVI** — Liu et al., 2024. *A Tuning-Free KV Cache Quantization Algorithm.* [arXiv:2402.02750](https://arxiv.org/abs/2402.02750)
+- **TurboQuant** — Zandieh et al., ICLR 2026. *Online Vector Quantization with Near-optimal Distortion Rate.* [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
+- **KnormPress** — Devoto et al., 2024. *A Simple and Effective L2 Norm-Based Strategy for KV Cache Compression.* [arXiv:2406.11430](https://arxiv.org/abs/2406.11430)
+
+If you use FADE in your work:
+```bibtex
+@software{fade2026,
+  title  = {FADE: Frequency-Adaptive Decay Encoding},
+  author = {Branislav Đalić},
+  url    = {https://github.com/Omodaka9375/fade},
+  year   = {2026},
+}
+```
+
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
