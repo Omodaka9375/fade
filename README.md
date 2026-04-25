@@ -48,13 +48,13 @@ flowchart LR
 
 | Config | KV cache | Compression |
 |--------|----------|:-----------:|
-| Baseline FP16 | 24.00 MiB | 1× |
-| Safe (INT4) | 6.78 MiB | **3.5×** |
-| Rotated 2-bit | 3.88 MiB | **6.2×** |
-| Balanced (eviction) | 2.01 MiB | **11.9×** |
-| Aggressive | 1.03 MiB | **23.3×** |
+| Baseline FP16 | 112.00 MiB | 1× |
+| Safe (INT4) | 31.24 MiB | **3.6×** |
+| Rotated 2-bit | 17.70 MiB | **6.3×** |
+| Balanced (eviction) | 9.30 MiB | **12.0×** |
+| Aggressive | 4.77 MiB | **23.5×** |
 
-> Qwen2.5-0.5B-Instruct, 2048 tokens, RTX 3060. Needle: 3/3 PASS. Baseline FP16 PPL: 1.24 (delta-PPL per preset forthcoming with 7B+ model benchmarks).
+> Qwen2.5-7B-Instruct, 2048 tokens, DGX Spark. Needle: 4/4 PASS (512–4096). WikiText-2 PPL: 6.56.
 
 ### Fused kernel speed
 
@@ -253,28 +253,31 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 ## Results
 
-Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB. Benchmarks on 7B+ models (Qwen2.5-7B, Llama-3.1-8B) on DGX Spark forthcoming.
+### DGX Spark — Qwen2.5-7B-Instruct (2048 tokens)
 
-### Compression
+| Config | KV cache | Compression | Decode TPS |
+|--------|----------|:-----------:|:----------:|
+| Baseline FP16 | 112.00 MiB | 1.0× | 13.3 tok/s |
+| Safe (INT4) | 31.24 MiB | **3.6×** | 13.3 tok/s |
+| Rotated 2-bit | 17.70 MiB | **6.3×** | 13.3 tok/s |
+| Balanced (eviction) | 9.30 MiB | **12.0×** | 13.3 tok/s |
+| Aggressive | 4.77 MiB | **23.5×** | 13.3 tok/s |
 
-| Config                     | KV cache  | Compression | Notes                    |
-|----------------------------|-----------|-------------|--------------------------|
-| Baseline FP16              | 24.00 MiB | 1.0×        |                          |
-| Safe (INT4, no eviction)   | 6.78 MiB  | **3.5×**    | No eviction              |
-| Rotated 2-bit              | 3.88 MiB  | **6.2×**    | Rotation + 2-bit packing |
-| Balanced (INT4 + eviction) | 2.01 MiB  | **11.9×**   | Position-based eviction  |
-| Aggressive                 | 1.03 MiB  | **23.3×**   | Smaller budget (validate on your workload) |
+> NVIDIA DGX Spark (Grace Blackwell, 128 GB). Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 6.56.
 
-### Quality
+### RTX 3060 — Qwen2.5-0.5B-Instruct (2048 tokens)
 
-| Test                |  Result  |
-|---------------------|--------- |
-| Needle @512 tokens  | ✅ PASS |
-| Needle @1024 tokens | ✅ PASS |
-| Needle @2048 tokens | ✅ PASS |
-| Baseline FP16 PPL   | 1.24     |
+| Config | KV cache | Compression | Decode TPS |
+|--------|----------|:-----------:|:----------:|
+| Baseline FP16 | 24.00 MiB | 1.0× | 128.5 tok/s |
+| Safe (INT4) | 6.78 MiB | **3.5×** | 125.8 tok/s |
+| Rotated 2-bit | 3.88 MiB | **6.2×** | 125.9 tok/s |
+| Balanced (eviction) | 2.01 MiB | **11.9×** | 125.8 tok/s |
+| Aggressive | 1.03 MiB | **23.3×** | 125.9 tok/s |
 
-### Performance (fused Triton kernel)
+> Needle: 4/4 PASS (512–4096 tokens). Baseline FP16 PPL: 1.24. TPS overhead: ~2%.
+
+### Fused Triton kernel (RTX 3060)
 
 | Path | Time | vs FP16 |
 |------|------|---------|
@@ -282,7 +285,7 @@ Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB. Benchmarks
 | Dequant + SDPA (old) | 0.932 ms | 7.0× slower |
 | **Fused INT4 (new)** | **0.189 ms** | **1.4×** |
 
-Run benchmarks yourself: `python benchmarks/full_suite.py`, `python benchmarks/pareto.py --csv pareto.csv`
+Run benchmarks yourself: `python benchmarks/production_suite.py`, `python benchmarks/full_suite.py`
 
 ## Project layout
 
