@@ -105,7 +105,9 @@ def _run_model(model_type: str, extra_cfg: dict | None = None, expect_scheme=Van
     # Reassign tiers — sinks(2) + recent(4) = 6 FP16, rest INT4.
     reassign_tiers(cache, tracker, num_layers)
     state = cache._layers[0]
-    assert state.fp16_k.shape[-2] == 6
+    n_sink = state.sink_k.shape[-2] if state.sink_k is not None else 0
+    n_recent = state.fp16_k.shape[-2] if state.fp16_k is not None else 0
+    assert n_sink + n_recent == 6
     assert state.int4_kq.shape[-2] == 17 - 6
 
     # Decode after reassignment.

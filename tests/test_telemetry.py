@@ -169,7 +169,10 @@ def test_dump_debug_creates_valid_json():
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         assert data["n_layers"] == 1
         layer = data["layers"][0]
-        assert layer["fp16_count"] == 5
+        # After C3: fp16_count = recent only; sinks are in sink_pos.
+        sink_count = len(layer.get("sink_positions", []))
+        fp16_count = layer["fp16_count"]
+        assert sink_count + fp16_count == 5
         assert layer["int4_count"] == 5
         assert layer["total_seq_length"] == 10
         assert "fp16_positions" in layer

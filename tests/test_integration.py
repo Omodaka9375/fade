@@ -72,7 +72,9 @@ def test_tiered_cache_end_to_end():
     reassign_tiers(cache, tracker, num_layers)
     state = cache._layers[0]
     # sinks (2) + recent (4) = 6 FP16; rest (11) INT4 with int4_budget=None
-    assert state.fp16_k.shape[-2] == 6
+    n_sink = state.sink_k.shape[-2] if state.sink_k is not None else 0
+    n_recent = state.fp16_k.shape[-2] if state.fp16_k is not None else 0
+    assert n_sink + n_recent == 6
     assert state.int4_kq.shape[-2] == 17 - 6
 
     # next decode still works
@@ -175,7 +177,9 @@ def test_tiered_cache_with_eviction():
     expected_fp16 = 2 + 4  # sinks + recent
     expected_int4 = 4
     expected_int2 = 2
-    assert state.fp16_k.shape[-2] == expected_fp16
+    n_sink = state.sink_k.shape[-2] if state.sink_k is not None else 0
+    n_recent = state.fp16_k.shape[-2] if state.fp16_k is not None else 0
+    assert n_sink + n_recent == expected_fp16
     assert state.int4_kq.shape[-2] == expected_int4
     assert state.int2_kq is not None
     assert state.int2_actual_count == expected_int2

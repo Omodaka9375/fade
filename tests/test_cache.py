@@ -108,7 +108,10 @@ def test_apply_tier_assignment_splits_storage_without_loss():
     cache.apply_tier_assignment(0, tiers)
 
     state = cache._layers[0]
-    assert state.fp16_k.shape[-2] == 5
+    # After C3: sinks (2) in sink_k, recent (3) in fp16_k = 5 total FP16.
+    n_sink = state.sink_k.shape[-2] if state.sink_k is not None else 0
+    n_recent = state.fp16_k.shape[-2] if state.fp16_k is not None else 0
+    assert n_sink + n_recent == 5
     assert state.int4_kq.shape[-2] == 5
     assert cache.get_seq_length(0) == 10
 

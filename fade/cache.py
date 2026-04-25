@@ -64,9 +64,15 @@ class LayerState:
           hot path never needs ``argsort`` or ``index_select``.
     """
 
-    fp16_k: Tensor | None = None  # [B, H, S_fp, D]
+    # Dedicated sink buffer (C3). Allocated once during first reassignment,
+    # never modified afterward. Separating sinks from the recent window
+    # eliminates per-assemble slicing and shrinks the FP16 pre-alloc buffer.
+    sink_k: Tensor | None = None  # [B, H, N_SINK, D]
+    sink_v: Tensor | None = None
+    sink_pos: Tensor | None = None  # LongTensor [N_SINK]
+    fp16_k: Tensor | None = None  # [B, H, S_recent, D] (recent window only after first reassign)
     fp16_v: Tensor | None = None
-    fp16_pos: Tensor | None = None  # LongTensor [S_fp]
+    fp16_pos: Tensor | None = None  # LongTensor [S_recent]
     int4_kq: Tensor | None = None  # int8 tensor holding INT4 values, [B, H, S_q, D]
     int4_ks: Tensor | None = None  # K scales, [B, H, 1, D]
     int4_vq: Tensor | None = None
@@ -109,10 +115,19 @@ class LayerState:
     backend_k: dict | None = None
     backend_v: dict | None = None
     backend_pos: Tensor | None = None
+    # Running byte counter for compressed_storage_bytes (C4 optimization).
+    _compressed_bytes: int = 0
 
     def total_seq_length(self) -> int:
         total = 0
-        for pos in (self.fp16_pos, self.int4_pos, self.int2_pos, self.pq_pos, self.backend_pos):
+        for pos in (
+            self.sink_pos,
+            self.fp16_pos,
+            self.int4_pos,
+            self.int2_pos,
+            self.pq_pos,
+            self.backend_pos,
+        ):
             if pos is not None:
                 total += int(pos.shape[0])
         return total
@@ -418,35 +433,59 @@ class TieredKVCache(DynamicCache):
     def compressed_storage_bytes(self) -> int:
         """Bytes needed for the *essential* (compressed) form only — excludes
         the ephemeral dequantized caches. This is the true at-rest metric.
+
+        Uses a running counter updated during ``apply_tier_assignment`` for
+        O(1) reads. Falls back to the full walk when the counter hasn't been
+        populated yet (pre-first-reassignment).
         """
+        # Fast path: use running counters if any layer has been reassigned.
+        if self._layers and any(s._compressed_bytes > 0 for s in self._layers):
+            return sum(s._compressed_bytes for s in self._layers)
+        # Slow path: walk all tensors (pre-reassignment or fresh cache).
+        return self._compute_compressed_bytes()
+
+    def _compute_compressed_bytes(self) -> int:
+        """Walk all tensors to compute compressed storage bytes."""
         total = 0
         for state in self._layers:
-            for t in (
-                state.fp16_k,
-                state.fp16_v,
-                state.int4_kq,
-                state.int4_vq,
-                state.int4_ks,
-                state.int4_vs,
-                state.int2_kq,
-                state.int2_vq,
-                state.int2_ks,
-                state.int2_vs,
-            ):
-                if t is not None:
-                    total += int(t.element_size() * t.numel())
-            # Backend-compressed dicts (TurboQuant etc.).
-            for d in (state.backend_k, state.backend_v):
-                if isinstance(d, dict):
-                    for v in d.values():
-                        if isinstance(v, Tensor):
-                            total += int(v.element_size() * v.numel())
+            total += self._layer_compressed_bytes(state)
+        return total
+
+    @staticmethod
+    def _layer_compressed_bytes(state: LayerState) -> int:
+        """Compute compressed bytes for a single layer."""
+        total = 0
+        for t in (
+            state.sink_k,
+            state.sink_v,
+            state.fp16_k,
+            state.fp16_v,
+            state.int4_kq,
+            state.int4_vq,
+            state.int4_ks,
+            state.int4_vs,
+            state.int2_kq,
+            state.int2_vq,
+            state.int2_ks,
+            state.int2_vs,
+        ):
+            if t is not None:
+                total += int(t.element_size() * t.numel())
+        # Backend-compressed dicts (TurboQuant etc.).
+        for d in (state.backend_k, state.backend_v):
+            if isinstance(d, dict):
+                for v in d.values():
+                    if isinstance(v, Tensor):
+                        total += int(v.element_size() * v.numel())
         return total
 
     # ------------------------------------------------------------------ #
     # Checkpointing
     # ------------------------------------------------------------------ #
     _LAYER_TENSOR_KEYS = (
+        "sink_k",
+        "sink_v",
+        "sink_pos",
         "fp16_k",
         "fp16_v",
         "fp16_pos",
@@ -537,6 +576,8 @@ class TieredKVCache(DynamicCache):
                 "int2_actual_count": state.int2_actual_count,
                 "total_seq_length": state.total_seq_length(),
             }
+            if state.sink_pos is not None:
+                layer["sink_positions"] = state.sink_pos.tolist()
             if state.fp16_pos is not None:
                 layer["fp16_positions"] = state.fp16_pos.tolist()
             if state.int4_pos is not None:
@@ -689,10 +730,15 @@ class TieredKVCache(DynamicCache):
         parts_v: list[Tensor] = []
         parts_pos: list[Tensor] = []
         nsk = state.sink_count
-        fp16_len = int(state.fp16_k.shape[-2]) if state.fp16_k is not None else 0
 
-        # --- sinks ---
-        if state.fp16_k is not None and nsk > 0:
+        # --- sinks (dedicated buffer after first reassignment) ---
+        if state.sink_k is not None:
+            parts_k.append(state.sink_k)
+            parts_v.append(state.sink_v)
+            if want_positions:
+                parts_pos.append(state.sink_pos)
+        elif state.fp16_k is not None and nsk > 0:
+            # Pre-first-reassignment: sinks are still the leading prefix of fp16.
             parts_k.append(state.fp16_k[..., :nsk, :])
             parts_v.append(state.fp16_v[..., :nsk, :])
             if want_positions:
@@ -746,11 +792,16 @@ class TieredKVCache(DynamicCache):
                     parts_pos.append(all_pos[order])
 
         # --- recent ---
-        if state.fp16_k is not None and nsk < fp16_len:
-            parts_k.append(state.fp16_k[..., nsk:, :])
-            parts_v.append(state.fp16_v[..., nsk:, :])
-            if want_positions:
-                parts_pos.append(state.fp16_pos[nsk:])
+        if state.fp16_k is not None:
+            # After first reassignment, fp16 holds only recent (no sinks).
+            # Before first reassignment, sinks are the leading prefix — skip them.
+            start = 0 if state.sink_k is not None else nsk
+            fp16_len = int(state.fp16_k.shape[-2])
+            if start < fp16_len:
+                parts_k.append(state.fp16_k[..., start:, :])
+                parts_v.append(state.fp16_v[..., start:, :])
+                if want_positions:
+                    parts_pos.append(state.fp16_pos[start:])
 
         if want_positions:
             return parts_k, parts_v, parts_pos
@@ -885,11 +936,27 @@ class TieredKVCache(DynamicCache):
 
         fp16_idx = (tiers == TIER_FP16).nonzero(as_tuple=False).squeeze(-1)
         if fp16_idx.numel() > 0:
-            state.fp16_k = k_full.index_select(-2, fp16_idx).contiguous()
-            state.fp16_v = v_full.index_select(-2, fp16_idx).contiguous()
-            state.fp16_pos = pos_full.index_select(0, fp16_idx).contiguous()
+            all_fp16_k = k_full.index_select(-2, fp16_idx).contiguous()
+            all_fp16_v = v_full.index_select(-2, fp16_idx).contiguous()
+            all_fp16_pos = pos_full.index_select(0, fp16_idx).contiguous()
+            # Split sinks from recent (C3).
+            n_sinks = min(self.n_sink, int(fp16_idx.numel()))
+            if n_sinks > 0:
+                state.sink_k = all_fp16_k[..., :n_sinks, :]
+                state.sink_v = all_fp16_v[..., :n_sinks, :]
+                state.sink_pos = all_fp16_pos[:n_sinks]
+            else:
+                state.sink_k = state.sink_v = state.sink_pos = None
+            # Recent window is everything after sinks.
+            if n_sinks < int(fp16_idx.numel()):
+                state.fp16_k = all_fp16_k[..., n_sinks:, :]
+                state.fp16_v = all_fp16_v[..., n_sinks:, :]
+                state.fp16_pos = all_fp16_pos[n_sinks:]
+            else:
+                state.fp16_k = state.fp16_v = state.fp16_pos = None
         else:
             state.fp16_k = state.fp16_v = state.fp16_pos = None
+            state.sink_k = state.sink_v = state.sink_pos = None
         # Reseed the pre-alloc buffer to avoid reallocation on the next append.
         n_fp16 = int(state.fp16_k.shape[-2]) if state.fp16_k is not None else 0
         if n_fp16 > 0 and state._fp16_buf_k is not None and n_fp16 <= state._fp16_buf_k.shape[-2]:
@@ -897,12 +964,10 @@ class TieredKVCache(DynamicCache):
             state._fp16_buf_v[:, :, :n_fp16, :] = state.fp16_v
             state._fp16_buf_pos[:n_fp16] = state.fp16_pos
             state._fp16_len = n_fp16
-            # Expose views so subsequent reads go through the buffer.
             state.fp16_k = state._fp16_buf_k[:, :, :n_fp16, :]
             state.fp16_v = state._fp16_buf_v[:, :, :n_fp16, :]
             state.fp16_pos = state._fp16_buf_pos[:n_fp16]
         else:
-            # Buffer too small or absent — let _append_fp16 re-init.
             state._fp16_buf_k = None
             state._fp16_buf_v = None
             state._fp16_buf_pos = None
@@ -982,11 +1047,12 @@ class TieredKVCache(DynamicCache):
         state.pq_k_deq = None
         state.pq_v_deq = None
 
-        # Sinks are positions 0..n_sink-1. Since the policy always places them
-        # in the FP16 tier and ``fp16_pos`` is sorted ascending, they form the
-        # leading prefix.
-        if state.fp16_pos is not None:
-            state.sink_count = min(self.n_sink, int(state.fp16_pos.shape[0]))
+        # Update running byte counter (C4).
+        state._compressed_bytes = self._layer_compressed_bytes(state)
+
+        # Update sink_count from the dedicated sink buffer (C3).
+        if state.sink_pos is not None:
+            state.sink_count = int(state.sink_pos.shape[0])
         else:
             state.sink_count = 0
 

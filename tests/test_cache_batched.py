@@ -111,7 +111,11 @@ def test_tier_assignment_batched_splits_storage():
     cache.apply_tier_assignment(0, tiers)
 
     state = cache._layers[0]
-    assert state.fp16_k.shape == (B, H, 5, D)
+    # After C3: sinks in sink_k, recent in fp16_k.
+    n_sink = state.sink_k.shape[-2] if state.sink_k is not None else 0
+    n_recent = state.fp16_k.shape[-2] if state.fp16_k is not None else 0
+    assert n_sink + n_recent == 5
+    assert state.fp16_k.shape[0] == B  # batch dim preserved
     # INT4 is bit-packed along the last dim (D -> D/2).
     assert state.int4_kq.shape == (B, H, 5, D // 2)
     assert state.int4_ks.shape == (B, H, 1, D)  # per-channel K scales survive
