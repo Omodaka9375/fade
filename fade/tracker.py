@@ -34,8 +34,8 @@ class AttentionTracker:
             attn_weights: [B, H, Q, K] softmax weights for this layer.
             layer_idx: transformer layer index.
         """
-        # mass received per key position, summed over batch, heads, and query positions
-        mass = attn_weights.detach().float().sum(dim=(0, 1, 2))  # [K]
+        # Sum in source dtype (softmax outputs are bounded), then cast to fp32.
+        mass = attn_weights.detach().sum(dim=(0, 1, 2)).float()  # [K]
         prev = self._scores[layer_idx]
         if prev is None:
             self._scores[layer_idx] = mass.clone()

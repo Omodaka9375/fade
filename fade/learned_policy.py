@@ -118,34 +118,45 @@ def reassign_tiers_learned(
     Tokens in the middle (between sinks and recent window) are scored by the
     MLP; the top ``int4_budget`` survive as INT4, the rest are evicted.
     """
+    # Collect per-layer metadata in a first pass, then batch MLP forward.
+    layer_infos: list[tuple[int, int, Tensor]] = []  # (layer_idx, S, features)
+    device = torch.device("cpu")
     for layer_idx in range(num_layers):
         if not cache.is_managed(layer_idx):
             continue
         S = int(cache.get_seq_length(layer_idx))
         if S == 0:
             continue
-
         scores = None
         if scores_per_layer is not None and layer_idx < len(scores_per_layer):
             scores = scores_per_layer[layer_idx]
-
         state = cache._layers[layer_idx]
         ref = state.fp16_k if state.fp16_k is not None else state.int4_kq
         device = ref.device if ref is not None else torch.device("cpu")
-
         features = _build_features(S, scores, layer_idx, num_layers, step, device)
+        layer_infos.append((layer_idx, S, features))
 
-        with torch.no_grad():
-            keep_prob = mlp.to(device)(features)  # [S]
+    if not layer_infos:
+        return
 
-        # Build tier assignment using the same sink/recent/budget structure.
+    # Single batched MLP forward across all layers.
+    all_features = torch.cat([f for _, _, f in layer_infos], dim=0)  # [sum(S), 4]
+    mlp_on_device = mlp.to(device)
+    with torch.no_grad():
+        all_probs = mlp_on_device(all_features)  # [sum(S)]
+
+    # Scatter results back per layer.
+    offset = 0
+    for layer_idx, S, _ in layer_infos:
+        keep_prob = all_probs[offset : offset + S]
+        offset += S
+
         tiers = torch.full((S,), TIER_EVICT, dtype=torch.long, device=device)
         sink_end = min(cache.n_sink, S)
         tiers[:sink_end] = TIER_FP16
         recent_start = max(sink_end, S - cache.recent_window)
         tiers[recent_start:] = TIER_FP16
 
-        # Middle tokens: rank by MLP keep_prob.
         middle_mask = tiers == TIER_EVICT
         middle_idx = middle_mask.nonzero(as_tuple=False).squeeze(-1)
         if middle_idx.numel() > 0:
@@ -153,16 +164,16 @@ def reassign_tiers_learned(
                 tiers[middle_idx] = TIER_INT4
             else:
                 middle_scores = keep_prob[middle_idx]
-                top_k = middle_scores.topk(cache.int4_budget).indices
-                tiers[middle_idx[top_k]] = TIER_INT4
+                sorted_idx = middle_scores.argsort(descending=True)
+                tiers[middle_idx[sorted_idx[: cache.int4_budget]]] = TIER_INT4
 
-                # INT2 budget for remaining.
-                remaining = (tiers == TIER_EVICT).nonzero(as_tuple=False).squeeze(-1)
-                if remaining.numel() > 0 and cache.int2_budget > 0:
-                    rem_scores = keep_prob[remaining]
-                    k2 = min(cache.int2_budget, remaining.numel())
-                    top2 = rem_scores.topk(k2).indices
-                    tiers[remaining[top2]] = TIER_INT2
+                if cache.int2_budget > 0:
+                    n_rem = sorted_idx.shape[0] - cache.int4_budget
+                    k2 = min(cache.int2_budget, n_rem)
+                    if k2 > 0:
+                        tiers[
+                            middle_idx[sorted_idx[cache.int4_budget : cache.int4_budget + k2]]
+                        ] = TIER_INT2
 
         cache.apply_tier_assignment(layer_idx, tiers)
 

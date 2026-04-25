@@ -2,6 +2,20 @@
 All notable changes to FADE will be documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.7.0] — Phase 2 optimization (tracker, policy, codebook, learned-policy vectorization)
+### Changed
+- **Tracker**: sum attention mass in source dtype instead of allocating full
+  fp32 copy; cast result to fp32 after reduction.
+- **Policy**: same fp16-sum optimization in `reassign_tiers_h2o`.
+- **Learned policy**: batched MLP forward across all layers (single
+  `mlp.to(device)` + one forward pass instead of per-layer loop).
+  Also replaced `topk` calls with single `argsort` + slice.
+- **Codebook**: vectorized `PQCodebook.encode` via batched `torch.cdist`
+  (eliminates per-sub Python loop).
+- **Codebook**: vectorized `PQCodebook.decode` via batched `torch.gather`
+  (eliminates per-sub Python loop).
+- **Codebook**: removed dead `flat.shape[0]` expression in `decode`.
+
 ## [0.6.0] — Phase 1 optimization (decode steady-state & reassignment quick wins)
 ### Changed
 - **Quant**: branchless bit-arithmetic sign extension in INT4/INT2 unpack

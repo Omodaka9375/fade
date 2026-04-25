@@ -82,7 +82,7 @@ def reassign_tiers_h2o(
         # --- build scores from prefill attention ---
         if layer_idx < len(prefill_attentions) and prefill_attentions[layer_idx] is not None:
             attn = prefill_attentions[layer_idx]  # [B, H, Q, K]
-            prefill_mass = attn.detach().float().sum(dim=(0, 1, 2))  # [K_prefill]
+            prefill_mass = attn.detach().sum(dim=(0, 1, 2)).float()  # [K_prefill]
         else:
             state = cache._layers[layer_idx]
             ref = state.fp16_k if state.fp16_k is not None else state.int4_kq

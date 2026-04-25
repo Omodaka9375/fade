@@ -110,11 +110,9 @@ class PQCodebook:
         subs = flat.view(M, self.n_sub, self.sub_dim)  # [M, n_sub, sub_dim]
 
         centroids = self.centroids.to(flat.device)  # [n_sub, K, sub_dim]
-        codes = torch.empty(M, self.n_sub, dtype=torch.uint8, device=flat.device)
-        for s in range(self.n_sub):
-            # [M, sub_dim] vs [K, sub_dim] -> [M, K]
-            dists = torch.cdist(subs[:, s, :], centroids[s])  # [M, K]
-            codes[:, s] = dists.argmin(dim=-1).to(torch.uint8)
+        # Batched cdist: [n_sub, M, sub_dim] vs [n_sub, K, sub_dim] -> [n_sub, M, K]
+        dists = torch.cdist(subs.transpose(0, 1), centroids)
+        codes = dists.argmin(dim=-1).to(torch.uint8).T  # [M, n_sub]
 
         return codes.view(*orig_shape[:-1], self.n_sub)
 
@@ -125,17 +123,11 @@ class PQCodebook:
         """
         orig_shape = codes.shape
         flat = codes.reshape(-1, self.n_sub).long()  # [M, n_sub]
-        flat.shape[0]
-
         centroids = self.centroids.to(flat.device)  # [n_sub, K, sub_dim]
-        parts = []
-        for s in range(self.n_sub):
-            idx = flat[:, s]  # [M]
-            # Gather: centroids[s][idx] -> [M, sub_dim]
-            parts.append(centroids[s].index_select(0, idx))
-
-        # [M, head_dim]
-        decoded = torch.cat(parts, dim=-1)
+        # Batched gather: expand codes to [n_sub, M, sub_dim] for index into dim=1.
+        idx = flat.T.unsqueeze(-1).expand(-1, -1, self.sub_dim)  # [n_sub, M, sub_dim]
+        gathered = centroids.gather(1, idx)  # [n_sub, M, sub_dim]
+        decoded = gathered.transpose(0, 1).reshape(-1, self.head_dim)  # [M, head_dim]
         return decoded.view(*orig_shape[:-1], self.head_dim)
 
 
