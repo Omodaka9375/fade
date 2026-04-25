@@ -107,18 +107,39 @@ def score_sample(prediction: str, references: list[str], task: str) -> float:
 
 # --- data loading ----------------------------------------------------------- #
 def load_longbench_task(task: str, max_samples: int) -> list[dict]:
-    """Load a LongBench task from HuggingFace datasets."""
+    """Load a LongBench task from HuggingFace.
+
+    Uses the auto-converted Parquet branch when available, falls back
+    to downloading the JSONL directly from the dataset repo.
+    """
+    import json
+
+    # Try Parquet branch first (works with all datasets versions).
     try:
         from datasets import load_dataset
-    except ImportError as e:
-        raise ImportError(
-            "LongBench evaluation requires the `datasets` library. "
-            "Install with: pip install fade-kv[eval]"
-        ) from e
 
-    ds = load_dataset("THUDM/LongBench", task, split="test")
+        ds = load_dataset("THUDM/LongBench", task, split="test", revision="refs/convert/parquet")
+        rows = list(ds)
+    except Exception:
+        # Fall back to downloading JSONL directly.
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as e:
+            raise ImportError(
+                "LongBench evaluation requires `huggingface_hub`. "
+                "Install with: pip install fade-kv[eval]"
+            ) from e
+
+        local = hf_hub_download(
+            repo_id="THUDM/LongBench",
+            filename=f"data/{task}.jsonl",
+            repo_type="dataset",
+        )
+        with open(local, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+
     samples = []
-    for i, row in enumerate(ds):
+    for i, row in enumerate(rows):
         if i >= max_samples:
             break
         answers = row.get("answers", [row.get("answer", "")])
