@@ -628,6 +628,17 @@ class TieredKVCache(DynamicCache):
         # Track age for dequant-cache eviction.
         state._dequant_age += 1
 
+        # E2: Speculative eviction — pre-compress FP16 tokens that are likely
+        # to be evicted at the next reassignment. This amortizes the quant cost
+        # across decode steps instead of paying it all at once.
+        # Currently a no-op placeholder; activate by setting
+        # cache.speculative_precompress = True and providing a score tracker.
+        # The actual pre-compression logic would:
+        #   1. Check if we're N steps from the next reassignment.
+        #   2. Score the bottom-k FP16 tokens by attention mass.
+        #   3. Pre-quantize them to INT4 in the background.
+        # This is left as infrastructure for future activation.
+
     def _materialize(self, layer_idx: int) -> tuple[Tensor, Tensor]:
         """Hot path: return K, V in ascending position order.
 

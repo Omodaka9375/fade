@@ -140,6 +140,57 @@ class PQCodebook:
 
 
 @dataclass
+class SharedPQCodebook:
+    """Cross-layer shared PQ codebook.
+
+    Instead of one codebook per (layer, head), shares a single codebook
+    across a group of adjacent layers. Reduces codebook memory ~Nx where
+    N is the group size, at a small quality cost.
+
+    Usage:
+        shared = SharedPQCodebook.train(vectors_from_layers, group_size=4, ...)
+        # shared.codebook is a single PQCodebook used for all layers in the group
+    """
+
+    codebook: PQCodebook
+    group_size: int
+    layer_range: tuple[int, int]  # (start_layer, end_layer) inclusive
+
+    @classmethod
+    def train(
+        cls,
+        vectors_per_layer: list[Tensor],
+        group_size: int = 4,
+        sub_dim: int = DEFAULT_SUB_DIM,
+        num_centroids: int = DEFAULT_NUM_CENTROIDS,
+    ) -> list[SharedPQCodebook]:
+        """Train shared codebooks from per-layer calibration vectors.
+
+        Args:
+            vectors_per_layer: list of [N_i, head_dim] tensors, one per layer.
+            group_size: number of adjacent layers sharing one codebook.
+
+        Returns:
+            List of SharedPQCodebook, one per group.
+        """
+        n_layers = len(vectors_per_layer)
+        groups = []
+        for start in range(0, n_layers, group_size):
+            end = min(start + group_size, n_layers)
+            # Pool vectors from all layers in the group.
+            pooled = torch.cat(vectors_per_layer[start:end], dim=0)
+            cb = PQCodebook.train(pooled, sub_dim=sub_dim, num_centroids=num_centroids)
+            groups.append(cls(codebook=cb, group_size=end - start, layer_range=(start, end - 1)))
+        return groups
+
+    def encode(self, vectors: Tensor) -> Tensor:
+        return self.codebook.encode(vectors)
+
+    def decode(self, codes: Tensor) -> Tensor:
+        return self.codebook.decode(codes)
+
+
+@dataclass
 class ResidualPQCodebook:
     """Two-stage residual product quantization.
 

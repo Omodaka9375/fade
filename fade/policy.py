@@ -159,6 +159,76 @@ def reassign_tiers_by_position(
         cache.apply_tier_assignment(layer_idx, tiers)
 
 
+def reassign_tiers_adaptive(
+    cache: TieredKVCache,
+    tracker: AttentionTracker,
+    num_layers: int,
+    high_pct: float = 0.5,
+) -> None:
+    """Attention-aware adaptive bit allocation.
+
+    Splits middle tokens into tiers by attention score:
+    - Top ``high_pct`` of middle tokens → INT4 (best quality)
+    - Remaining middle tokens → INT2 (more compression)
+    - Tokens below ``int4_budget + int2_budget`` → evicted
+
+    This is FADE's native version of KVTC's DP bit allocation:
+    tokens that matter get more bits, tokens that don't get fewer.
+
+    Args:
+        cache: the tiered KV cache.
+        tracker: attention mass tracker with per-layer scores.
+        num_layers: number of transformer layers.
+        high_pct: fraction of middle tokens that get INT4 (rest get INT2).
+    """
+    for layer_idx in range(num_layers):
+        if not cache.is_managed(layer_idx):
+            continue
+        scores = tracker.scores(layer_idx)
+        if scores is None:
+            continue
+
+        S = int(scores.shape[0])
+        tiers = torch.full((S,), TIER_EVICT, dtype=torch.long, device=scores.device)
+
+        # Sinks + recent window → FP16.
+        sink_end = min(cache.n_sink, S)
+        tiers[:sink_end] = TIER_FP16
+        recent_start = max(sink_end, S - cache.recent_window)
+        tiers[recent_start:] = TIER_FP16
+
+        # Middle tokens: split by score.
+        middle_idx = (tiers == TIER_EVICT).nonzero(as_tuple=False).squeeze(-1)
+        if middle_idx.numel() == 0:
+            cache.apply_tier_assignment(layer_idx, tiers, scores=scores)
+            keep_mask = tiers != TIER_EVICT
+            tracker.remove_positions(layer_idx, keep_mask)
+            continue
+
+        middle_scores = scores[middle_idx]
+        n_middle = middle_idx.numel()
+
+        # Compute budgets.
+        total_budget = n_middle
+        if cache.int4_budget is not None:
+            total_budget = min(total_budget, cache.int4_budget + cache.int2_budget)
+
+        n_int4 = min(int(total_budget * high_pct), n_middle)
+        n_int2 = min(total_budget - n_int4, n_middle - n_int4)
+
+        if n_int4 + n_int2 > 0:
+            # Top-k by score get INT4, next-k get INT2.
+            sorted_idx = middle_scores.argsort(descending=True)
+            if n_int4 > 0:
+                tiers[middle_idx[sorted_idx[:n_int4]]] = TIER_INT4
+            if n_int2 > 0:
+                tiers[middle_idx[sorted_idx[n_int4 : n_int4 + n_int2]]] = TIER_INT2
+
+        cache.apply_tier_assignment(layer_idx, tiers, scores=scores)
+        keep_mask = (tiers == TIER_FP16) | (tiers == TIER_INT4) | (tiers == TIER_INT2)
+        tracker.remove_positions(layer_idx, keep_mask)
+
+
 def _assign_one_layer(
     S: int,
     scores: Tensor,
