@@ -3,10 +3,10 @@
 [![CI](https://github.com/Omodaka9375/fade/actions/workflows/ci.yml/badge.svg)](https://github.com/Omodaka9375/fade/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-brightgreen.svg)](https://python.org)
-[![PyPI](https://img.shields.io/pypi/v/fade-kv.svg)](https://pypi.org/project/fade-kv/)
+[![PyPI](https://img.shields.io/pypi/v/fade-kv.svg?cacheSeconds=3600)](https://pypi.org/project/fade-kv/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Omodaka9375/fade/blob/main/examples/quickstart.ipynb)
 
-**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache **3–23×** depending on config, with near-baseline quality.
+**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache **up to 23 times** depending on config, with near-baseline quality.
 
 ```python
 from fade import FadeConfig, create_tiered_cache
@@ -30,6 +30,39 @@ Tokens live in tiers based on age and attention importance:
 | **Evicted** | Nothing | Dropped when `INT4_BUDGET` is finite |
 
 When tokens are evicted, surviving K tensors are un-RoPE'd at old positions and re-RoPE'd with contiguous StreamingLLM positions.
+
+```mermaid
+flowchart LR
+    A["New Token"] --> B["FP16 Tier\n(sinks + recent)"]
+    B -->|reassign| C["INT4 Tier\n(middle)"]
+    C -->|budget full| D["INT2 / PQ\n(deep compress)"]
+    D -->|evict| E["Dropped\n(re-RoPE survivors)"]
+    style A fill:#4CAF50,color:#fff
+    style B fill:#2196F3,color:#fff
+    style C fill:#FF9800,color:#fff
+    style D fill:#f44336,color:#fff
+    style E fill:#9E9E9E,color:#fff
+```
+
+### Compression comparison
+
+```mermaid
+xychart-beta
+    title "KV Cache Compression (Qwen2.5-0.5B, 2K tokens)"
+    x-axis ["Baseline", "Safe INT4", "Rotated 2b", "Balanced", "Aggressive"]
+    y-axis "KV Cache (MiB)" 0 --> 25
+    bar [24.0, 6.78, 3.88, 2.01, 1.03]
+```
+
+### Fused kernel speedup
+
+```mermaid
+xychart-beta
+    title "Attention Latency (S_k=2048, D=128, RTX 3060)"
+    x-axis ["FP16 SDPA", "Fused INT4", "Dequant+SDPA"]
+    y-axis "Latency (ms)" 0 --> 1
+    bar [0.133, 0.189, 0.932]
+```
 
 ## Install
 
