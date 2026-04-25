@@ -113,4 +113,5 @@ addopts = "-q"
 markers = [
     "eval: quality evaluation tests (may download models; gated in CI)",
     "cuda: tests that require a CUDA device",
+    "dgx: tests requiring >=80GB GPU memory (DGX Spark / A100 / H100)",
 ]
