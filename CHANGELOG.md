@@ -2,6 +2,24 @@
 All notable changes to FADE will be documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [0.8.0] — Phase 3 optimization (Triton kernels + rotated backend)
+### Changed
+- **Fused kernel**: `@triton.autotune` with 5 configs (BLOCK_M 16–128,
+  BLOCK_N 64–128, varying warps/stages). Autotuned per `(N_CTX_K, BLOCK_D)`.
+- **Fused kernel**: `IS_CAUSAL` constexpr with block-skip fast path and
+  lower-triangular mask. `fused_int4_sdpa(is_causal=True)` exposed.
+- **Fused kernel**: GQA-aware dispatch — K/V with fewer heads than Q are
+  broadcast via `repeat_interleave` before the kernel launch.
+- **Fused kernel**: decode-optimal config (BLOCK_M=16) selected by autotune
+  when S_q is small. Refactored `_launch_fused_int4` helper.
+- **Triton unpack**: V-side per-token scale now runs through the Triton
+  `_unpack_int4_kernel` (new `SCALE_PER_TOKEN` constexpr) instead of
+  falling back to the pure-torch dequant path.
+- **Rotated quant**: bf16 rotation matmul on CUDA (skips fp32 buffer
+  allocation on Ampere+); fp32 preserved for fp16 inputs.
+- **Backends**: `RotatedINT4Backend` caches the rotation matrix per device
+  (eliminates `.to(device)` on every compress/decompress call).
+
 ## [0.7.0] — Phase 2 optimization (tracker, policy, codebook, learned-policy vectorization)
 ### Changed
 - **Tracker**: sum attention mass in source dtype instead of allocating full

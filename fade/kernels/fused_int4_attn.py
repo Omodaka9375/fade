@@ -32,6 +32,16 @@ except ImportError:
 
 if _HAS_TRITON:
 
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_M": 16, "BLOCK_N": 64}, num_warps=4, num_stages=2),
+            triton.Config({"BLOCK_M": 32, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+            triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+            triton.Config({"BLOCK_M": 64, "BLOCK_N": 128}, num_warps=8, num_stages=3),
+            triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=4),
+        ],
+        key=["N_CTX_K", "BLOCK_D"],
+    )
     @triton.jit
     def _fused_int4_attn_fwd(
         Q_ptr,
@@ -63,6 +73,7 @@ if _HAS_TRITON:
         BLOCK_N: tl.constexpr,
         BLOCK_D: tl.constexpr,
         BLOCK_D_HALF: tl.constexpr,
+        IS_CAUSAL: tl.constexpr = False,
     ):
         """Fused INT4 dequant + attention forward pass.
 
@@ -123,6 +134,10 @@ if _HAS_TRITON:
             offs_n = start_n + tl.arange(0, BLOCK_N)
             mask_n = offs_n < N_CTX_K
 
+            # Causal: skip entire block if all keys are after all queries.
+            if IS_CAUSAL and start_n > (pid_m + 1) * BLOCK_M - 1:
+                continue
+
             # --- Unpack K tile [BLOCK_N, BLOCK_D_HALF] uint8 ---
             kp_ptrs = (
                 K_packed_ptr
@@ -147,6 +162,11 @@ if _HAS_TRITON:
 
             # Mask out-of-bounds keys.
             s = tl.where(mask_n[None, :], s, float("-inf"))
+
+            # Causal mask: zero out keys beyond the query position.
+            if IS_CAUSAL:
+                causal_mask = offs_m[:, None] >= offs_n[None, :]
+                s = tl.where(causal_mask, s, float("-inf"))
 
             # Online softmax update.
             m_new = tl.maximum(m_i, tl.max(s, axis=1))
@@ -203,44 +223,25 @@ if _HAS_TRITON:
         tl.store(out_even_ptrs, acc_even.to(tl.float16), mask=mask_m)
         tl.store(out_odd_ptrs, acc_odd.to(tl.float16), mask=mask_m)
 
-    def fused_int4_sdpa(
-        q: Tensor,
-        k_packed: Tensor,
-        k_scale: Tensor,
-        v_packed: Tensor,
-        v_scale: Tensor,
-    ) -> Tensor:
-        """Fully-fused INT4 attention (FlashAttention-2 style).
+    def _launch_fused_int4(
+        q_flat: Tensor,
+        k_flat: Tensor,
+        ks_flat: Tensor,
+        v_flat: Tensor,
+        vs_flat: Tensor,
+        out: Tensor,
+        Z: int,
+        S_q: int,
+        S_k: int,
+        D: int,
+        D_half: int,
+        sm_scale: float,
+        is_causal: bool,
+    ) -> None:
+        """Launch the autotuned fused INT4 attention kernel."""
 
-        Args:
-            q: [B, H, S_q, D] fp16 queries.
-            k_packed: [B, H, S_k, D//2] uint8 bit-packed INT4 K.
-            k_scale: [B, H, 1, D] fp16 per-channel K scale.
-            v_packed: [B, H, S_k, D//2] uint8 bit-packed INT4 V.
-            v_scale: [B, H, S_k, 1] fp16 per-token V scale.
-
-        Returns:
-            [B, H, S_q, D] fp16 output. Never materializes fp16 K/V.
-        """
-        B, H, S_q, D = q.shape
-        S_k = k_packed.shape[2]
-        D_half = D // 2
-        Z = B * H
-
-        # Flatten batch*heads.
-        q_flat = q.reshape(Z, S_q, D).contiguous()
-        k_flat = k_packed.reshape(Z, S_k, D_half).contiguous()
-        ks_flat = k_scale.reshape(Z, 1, D).contiguous()
-        v_flat = v_packed.reshape(Z, S_k, D_half).contiguous()
-        vs_flat = v_scale.reshape(Z, S_k, 1).contiguous()
-
-        out = torch.empty(Z, S_q, D, dtype=torch.float16, device=q.device)
-
-        sm_scale = 1.0 / math.sqrt(D)
-        BLOCK_M = 64
-        BLOCK_N = 64
-
-        grid = (Z, triton.cdiv(S_q, BLOCK_M))
+        def grid(META):
+            return (Z, triton.cdiv(S_q, META["BLOCK_M"]))
 
         _fused_int4_attn_fwd[grid](
             q_flat,
@@ -268,13 +269,77 @@ if _HAS_TRITON:
             S_q,
             S_k,
             sm_scale,
-            BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N,
             BLOCK_D=D,
             BLOCK_D_HALF=D_half,
+            IS_CAUSAL=is_causal,
         )
 
-        return out.reshape(B, H, S_q, D)
+    def fused_int4_sdpa(
+        q: Tensor,
+        k_packed: Tensor,
+        k_scale: Tensor,
+        v_packed: Tensor,
+        v_scale: Tensor,
+        is_causal: bool = False,
+    ) -> Tensor:
+        """Fully-fused INT4 attention (FlashAttention-2 style).
+
+        Supports GQA: K/V may have fewer heads than Q. When
+        ``k_packed.shape[1] < q.shape[1]``, K/V heads are broadcast to
+        match Q heads before the kernel launch.
+
+        Args:
+            q: [B, H_q, S_q, D] fp16 queries.
+            k_packed: [B, H_kv, S_k, D//2] uint8 bit-packed INT4 K.
+            k_scale: [B, H_kv, 1, D] fp16 per-channel K scale.
+            v_packed: [B, H_kv, S_k, D//2] uint8 bit-packed INT4 V.
+            v_scale: [B, H_kv, S_k, 1] fp16 per-token V scale.
+
+        Returns:
+            [B, H_q, S_q, D] fp16 output. Never materializes fp16 K/V.
+        """
+        B, H_q, S_q, D = q.shape
+        H_kv = k_packed.shape[1]
+        S_k = k_packed.shape[2]
+        D_half = D // 2
+
+        # GQA broadcast: repeat K/V heads to match Q heads.
+        if H_kv < H_q:
+            repeats = H_q // H_kv
+            k_packed = k_packed.repeat_interleave(repeats, dim=1)
+            k_scale = k_scale.repeat_interleave(repeats, dim=1)
+            v_packed = v_packed.repeat_interleave(repeats, dim=1)
+            v_scale = v_scale.repeat_interleave(repeats, dim=1)
+
+        Z = B * H_q
+
+        # Flatten batch*heads.
+        q_flat = q.reshape(Z, S_q, D).contiguous()
+        k_flat = k_packed.reshape(Z, S_k, D_half).contiguous()
+        ks_flat = k_scale.reshape(Z, 1, D).contiguous()
+        v_flat = v_packed.reshape(Z, S_k, D_half).contiguous()
+        vs_flat = v_scale.reshape(Z, S_k, 1).contiguous()
+
+        out = torch.empty(Z, S_q, D, dtype=torch.float16, device=q.device)
+        sm_scale = 1.0 / math.sqrt(D)
+
+        _launch_fused_int4(
+            q_flat,
+            k_flat,
+            ks_flat,
+            v_flat,
+            vs_flat,
+            out,
+            Z,
+            S_q,
+            S_k,
+            D,
+            D_half,
+            sm_scale,
+            is_causal,
+        )
+
+        return out.reshape(B, H_q, S_q, D)
 
 
 def fused_int4_sdpa_with_fallback(

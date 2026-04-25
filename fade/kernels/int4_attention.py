@@ -74,15 +74,25 @@ if _HAS_TRITON:
         stride_ob,
         stride_os,
         stride_od,
+        stride_ss,
         S,
         D_half: tl.constexpr,
         BLOCK_S: tl.constexpr,
+        SCALE_PER_TOKEN: tl.constexpr = False,
     ):
         """Unpack INT4 packed bytes to fp16 with scale, one (batch*head) row."""
         b = tl.program_id(0)
         s_start = tl.program_id(1) * BLOCK_S
         s_offsets = s_start + tl.arange(0, BLOCK_S)
         mask_s = s_offsets < S
+
+        # Per-token V scale: load once per token, broadcast across D.
+        if SCALE_PER_TOKEN:
+            vs = tl.load(
+                Scale_ptr + b * stride_sb + s_offsets * stride_ss,
+                mask=mask_s,
+                other=0,
+            ).to(tl.float32)  # [BLOCK_S]
 
         for d in range(D_half):
             packed = tl.load(
@@ -95,11 +105,14 @@ if _HAS_TRITON:
             high = tl.where(high >= 8, high - 16, high)
             low = tl.where(low >= 8, low - 16, low)
 
-            sc_hi = tl.load(Scale_ptr + b * stride_sb + (2 * d) * stride_sd).to(tl.float32)
-            sc_lo = tl.load(Scale_ptr + b * stride_sb + (2 * d + 1) * stride_sd).to(tl.float32)
-
-            out_hi = (high.to(tl.float32) * sc_hi).to(tl.float16)
-            out_lo = (low.to(tl.float32) * sc_lo).to(tl.float16)
+            if SCALE_PER_TOKEN:
+                out_hi = (high.to(tl.float32) * vs).to(tl.float16)
+                out_lo = (low.to(tl.float32) * vs).to(tl.float16)
+            else:
+                sc_hi = tl.load(Scale_ptr + b * stride_sb + (2 * d) * stride_sd).to(tl.float32)
+                sc_lo = tl.load(Scale_ptr + b * stride_sb + (2 * d + 1) * stride_sd).to(tl.float32)
+                out_hi = (high.to(tl.float32) * sc_hi).to(tl.float16)
+                out_lo = (low.to(tl.float32) * sc_lo).to(tl.float16)
 
             tl.store(
                 Out_ptr + b * stride_ob + s_offsets * stride_os + (2 * d) * stride_od,
@@ -113,7 +126,7 @@ if _HAS_TRITON:
             )
 
     def _triton_unpack_int4(packed: Tensor, scale: Tensor, dtype: torch.dtype) -> Tensor:
-        """Unpack INT4 via Triton kernel."""
+        """Unpack INT4 via Triton kernel. Supports per-channel K and per-token V scales."""
         orig_shape = packed.shape  # [B, H, S, D//2]
         B_H = orig_shape[0] * orig_shape[1]
         S = orig_shape[2]
@@ -122,18 +135,19 @@ if _HAS_TRITON:
 
         p_flat = packed.reshape(B_H, S, D_half).contiguous()
         # Scale: [B, H, 1, D] for K or [B, H, S, 1] for V.
-        # Broadcast to [B*H, D] for per-channel or [B*H, S] for per-token.
-        if scale.shape[-1] == D:  # per-channel K scale
+        per_token = scale.shape[-1] != D
+        if per_token:
+            # Per-token V scale: [B, H, S, 1] -> [B*H, S]
+            s_flat = scale.reshape(B_H, S).contiguous()
+            s_stride_b = s_flat.stride(0)
+            s_stride_d = 0  # unused for per-token
+            s_stride_s = s_flat.stride(1)
+        else:
+            # Per-channel K scale: [B, H, 1, D] -> [B*H, D]
             s_flat = scale.reshape(B_H, D).contiguous()
             s_stride_b = s_flat.stride(0)
             s_stride_d = s_flat.stride(1)
-        else:  # per-token V scale [B,H,S,1]
-            # For V scale, broadcast the single value across D.
-            # Use the torch fallback for V since per-token scale doesn't
-            # fit the per-channel kernel. This still benefits from K unpack.
-            from fade.quant import dequant_int4 as _dq
-
-            return _dq(packed, scale, dtype=dtype)
+            s_stride_s = 0  # unused for per-channel
 
         out = torch.empty(B_H, S, D, dtype=dtype, device=packed.device)
 
@@ -152,9 +166,11 @@ if _HAS_TRITON:
             out.stride(0),
             out.stride(1),
             out.stride(2),
+            s_stride_s,
             S,
             D_half=D_half,
             BLOCK_S=BLOCK_S,
+            SCALE_PER_TOKEN=per_token,
         )
         return out.reshape(*orig_shape[:2], S, D)
 

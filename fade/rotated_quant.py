@@ -96,6 +96,13 @@ def _random_orthogonal(dim: int, seed: int = DEFAULT_SEED) -> Tensor:
     return Q  # [D, D] orthogonal
 
 
+def _rotation_dtype(x: Tensor) -> torch.dtype:
+    """Choose matmul dtype for rotation: bf16 on Ampere+, fp32 otherwise."""
+    if x.dtype == torch.bfloat16 and x.is_cuda:
+        return torch.bfloat16
+    return torch.float32
+
+
 def rotated_quant_k(
     k: Tensor,
     R: Tensor,
@@ -112,15 +119,16 @@ def rotated_quant_k(
         (packed, scale) where packed is bit-packed uint8 and scale is [B,H,1,D].
     """
     qmin, qmax = _BIT_PARAMS[bits]
-    k_f = k.float()
-    k_rot = k_f @ R.to(k.device).T
+    compute_dtype = _rotation_dtype(k)
+    k_f = k.to(compute_dtype)
+    k_rot = k_f @ R.to(k.device, dtype=compute_dtype).T
+    k_rot = k_rot.float()  # quant math always in fp32
 
     absmax = k_rot.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)
     inv_scale = qmax / absmax
     scale = absmax / qmax
     q = (k_rot * inv_scale).round().clamp(qmin, qmax).to(torch.int8)
-    packed = _pack(q, bits)
-    return packed, scale.to(k.dtype)
+    return _pack(q, bits), scale.to(k.dtype)
 
 
 def rotated_dequant_k(
@@ -133,7 +141,8 @@ def rotated_dequant_k(
     """Inverse of rotated_quant_k."""
     q = _unpack(packed, bits)
     k_rot = q.to(dtype) * scale.to(dtype)
-    return (k_rot.float() @ R.to(k_rot.device)).to(dtype)
+    compute_dtype = torch.bfloat16 if dtype == torch.bfloat16 and k_rot.is_cuda else torch.float32
+    return (k_rot.to(compute_dtype) @ R.to(k_rot.device, dtype=compute_dtype)).to(dtype)
 
 
 def rotated_quant_v(
@@ -152,15 +161,16 @@ def rotated_quant_v(
         (packed, scale) where packed is bit-packed uint8 and scale is [B,H,S,1].
     """
     qmin, qmax = _BIT_PARAMS[bits]
-    v_f = v.float()
-    v_rot = v_f @ R.to(v.device).T
+    compute_dtype = _rotation_dtype(v)
+    v_f = v.to(compute_dtype)
+    v_rot = v_f @ R.to(v.device, dtype=compute_dtype).T
+    v_rot = v_rot.float()  # quant math always in fp32
 
     absmax = v_rot.abs().amax(dim=-1, keepdim=True).clamp(min=EPS)
     inv_scale = qmax / absmax
     scale = absmax / qmax
     q = (v_rot * inv_scale).round().clamp(qmin, qmax).to(torch.int8)
-    packed = _pack(q, bits)
-    return packed, scale.to(v.dtype)
+    return _pack(q, bits), scale.to(v.dtype)
 
 
 def rotated_dequant_v(
@@ -173,7 +183,8 @@ def rotated_dequant_v(
     """Inverse of rotated_quant_v."""
     q = _unpack(packed, bits)
     v_rot = q.to(dtype) * scale.to(dtype)
-    return (v_rot.float() @ R.to(v_rot.device)).to(dtype)
+    compute_dtype = torch.bfloat16 if dtype == torch.bfloat16 and v_rot.is_cuda else torch.float32
+    return (v_rot.to(compute_dtype) @ R.to(v_rot.device, dtype=compute_dtype)).to(dtype)
 
 
 __all__ = [

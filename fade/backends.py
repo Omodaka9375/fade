@@ -100,20 +100,24 @@ class RotatedINT4Backend:
     head_dim: int = 64
     bits: int = 4
     seed: int = 42
-    _R: Any = None  # cached rotation matrix
+    _R_per_device: dict = None  # type: ignore[assignment]  # cached per device
+
+    def __post_init__(self) -> None:
+        self._R_per_device = {}
 
     @property
     def name(self) -> str:
         return f"rotated_int{self.bits}"
 
     def _get_R(self, device: torch.device | None = None) -> Tensor:
-        if self._R is None:
-            from fade.rotated_quant import _random_orthogonal
+        device = device or torch.device("cpu")
+        cached = self._R_per_device.get(device)
+        if cached is not None:
+            return cached
+        from fade.rotated_quant import _random_orthogonal
 
-            self._R = _random_orthogonal(self.head_dim, self.seed)
-        R = self._R
-        if device is not None:
-            R = R.to(device)
+        R = _random_orthogonal(self.head_dim, self.seed).to(device)
+        self._R_per_device[device] = R
         return R
 
     def compress_k(self, k: Tensor) -> dict[str, Tensor]:
