@@ -6,7 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/fade-kv.svg?cacheSeconds=3600)](https://pypi.org/project/fade-kv/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Omodaka9375/fade/blob/main/examples/quickstart.ipynb)
 
-**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache **up to 23 times** depending on config, with near-baseline quality.
+**Frequency-Adaptive Decay Encoding** — drop-in KV cache compression for HuggingFace transformers. Shrinks the KV cache **3.5–12×** with near-baseline quality (up to 23× in aggressive mode — validate on your workload).
 
 ```python
 from fade import FadeConfig, create_tiered_cache
@@ -54,7 +54,7 @@ flowchart LR
 | Balanced (eviction) | 2.01 MiB | **11.9×** |
 | Aggressive | 1.03 MiB | **23.3×** |
 
-> Qwen2.5-0.5B-Instruct, 2048 tokens, RTX 3060. Needle: 3/3 PASS. PPL: 1.24.
+> Qwen2.5-0.5B-Instruct, 2048 tokens, RTX 3060. Needle: 3/3 PASS. Baseline FP16 PPL: 1.24 (delta-PPL per preset forthcoming with 7B+ model benchmarks).
 
 ### Fused kernel speed
 
@@ -66,20 +66,20 @@ flowchart LR
 
 ### How FADE compares (2026)
 
-| | **FADE** | **kvpress** (NVIDIA) | **TurboQuant** | **KVTC** |
+| | **FADE** | **kvpress** (NVIDIA) | **TurboQuant** (Google, ICLR 2026) | **KVTC** (NVIDIA, ICLR 2026) |
 |---|---|---|---|---|
-| **Approach** | Tiered quant + eviction + re-RoPE | Token eviction (20+ scoring methods) | Rotation + optimal codebook | PCA + DP bit allocation + entropy coding |
-| **Compression** | 3.5–23× | 2–10× (eviction only) | 4–6× | 6–9× |
-| **Quantization** | INT4/INT2/PQ + rotated 2-bit | None (drops tokens) | 3–4 bit | 1–6 bit |
-| **Eviction** | H2O, EMA, position, adaptive, learned | 20+ methods (SnapKV, TOVA, etc.) | None | None |
-| **Re-RoPE** | ✅ StreamingLLM contiguous | ❌ | ❌ | ✅ (undo before PCA) |
+| **Approach** | Tiered quant + eviction + re-RoPE | Token eviction / scoring (30+ methods) | Rotation + Lloyd-Max codebook | PCA + DP bit allocation + entropy coding |
+| **Compression** | 3.5–12× (23× aggressive) | 2–10× (eviction only) | 4–6× (3.5-bit zero-loss claimed) | 6–20× (up to 40× with entropy) |
+| **Quantization** | INT4/INT2/PQ + rotated 2-bit | Via HF `QuantizedCache` | 3–4 bit | 1–6 bit adaptive |
+| **Eviction** | H2O, EMA, position, adaptive, learned | 30+ methods (SnapKV, TOVA, KVzap, etc.) | None | None |
+| **Re-RoPE** | ✅ StreamingLLM contiguous | Partial (KeyRerotationPress, FinchPress) | ❌ | ✅ (undo before PCA) |
 | **Fused kernel** | ✅ Triton INT4 FlashAttn | ❌ | ✅ Triton fused | ✅ Triton |
-| **HF generate()** | ✅ Drop-in | Pipeline only | ✅ Drop-in | ❌ |
-| **Serving** | ✅ fade-server (OpenAI API) | ❌ | ✅ turboquant-server | ❌ |
+| **HF generate()** | ✅ Drop-in | Pipeline + context manager | ✅ Drop-in | ❌ |
+| **Serving** | ✅ fade-server (OpenAI API) | ❌ | ✅ vLLM / SGLang integration | ❌ |
 | **Hybrid models** | ✅ Qwen 3.5 DeltaNet skip | ❌ | ❌ | ❌ |
 | **Per-sequence batching** | ✅ Ragged tiers | ❌ | ❌ | ❌ |
-| **Stars** | New | 1K+ | 30–40 | 11 |
-| **Install** | `pip install fade-kv` | `pip install kvpress` | `pip install turboquant` | From source |
+| **Stars** | New | 1K+ | 1K+ (across implementations) | ~10 |
+| **Install** | `pip install fade-kv` | `pip install kvpress` | `pip install turboquant-kv` | From source |
 
 **FADE's unique advantage**: only system that combines quantization + attention-aware eviction + correct re-RoPE in one drop-in cache.
 
@@ -108,7 +108,7 @@ Optional extras: `pip install fade-kv[cuda]` (accelerate), `fade-kv[eval]` (data
 ```python
 from fade import FadeConfig, create_tiered_cache
 
-# Safe: ~3-4x compression, 100% greedy match. No eviction.
+# Safe: ~3-4x compression, no eviction.
 cache = create_tiered_cache(model, config=FadeConfig.safe())
 
 # Balanced: ~5x compression with H2O eviction.
@@ -253,17 +253,17 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 ## Results
 
-Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB.
+Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB. Benchmarks on 7B+ models (Qwen2.5-7B, Llama-3.1-8B) on DGX Spark forthcoming.
 
 ### Compression
 
 | Config                     | KV cache  | Compression | Notes                    |
 |----------------------------|-----------|-------------|--------------------------|
 | Baseline FP16              | 24.00 MiB | 1.0×        |                          |
-| Safe (INT4, no eviction)   | 6.78 MiB  | **3.5×**    | 100% greedy match        |
+| Safe (INT4, no eviction)   | 6.78 MiB  | **3.5×**    | No eviction              |
 | Rotated 2-bit              | 3.88 MiB  | **6.2×**    | Rotation + 2-bit packing |
 | Balanced (INT4 + eviction) | 2.01 MiB  | **11.9×**   | Position-based eviction  |
-| Aggressive                 | 1.03 MiB  | **23.3×**   | Smaller budget           |
+| Aggressive                 | 1.03 MiB  | **23.3×**   | Smaller budget (validate on your workload) |
 
 ### Quality
 
@@ -272,7 +272,7 @@ Benchmarked on **Qwen2.5-0.5B-Instruct**, 2048 tokens, RTX 3060 12GB.
 | Needle @512 tokens  | ✅ PASS |
 | Needle @1024 tokens | ✅ PASS |
 | Needle @2048 tokens | ✅ PASS |
-| Baseline PPL | 1.24 |
+| Baseline FP16 PPL   | 1.24     |
 
 ### Performance (fused Triton kernel)
 
@@ -325,6 +325,7 @@ FADE builds on ideas from these papers (all independently reimplemented — see 
 - **StreamingLLM** — Xiao et al., 2023. *Efficient Streaming Language Models with Attention Sinks.* [arXiv:2309.17453](https://arxiv.org/abs/2309.17453)
 - **KIVI** — Liu et al., 2024. *A Tuning-Free KV Cache Quantization Algorithm.* [arXiv:2402.02750](https://arxiv.org/abs/2402.02750)
 - **TurboQuant** — Zandieh et al., ICLR 2026. *Online Vector Quantization with Near-optimal Distortion Rate.* [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
+- **KVTC** — Staniszewski & Łańcucki, ICLR 2026. *KV Cache Transform Coding for Compact Storage in LLM Inference.* [arXiv:2511.01815](https://arxiv.org/abs/2511.01815)
 - **KnormPress** — Devoto et al., 2024. *A Simple and Effective L2 Norm-Based Strategy for KV Cache Compression.* [arXiv:2406.11430](https://arxiv.org/abs/2406.11430)
 
 If you use FADE in your work:
