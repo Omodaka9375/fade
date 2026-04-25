@@ -58,7 +58,7 @@ def run_decode(model, tokenizer, cache, num_layers, policy="position", tracker=N
 
 def main():
     print(f"Loading {MODEL_ID} on {DEVICE}...")
-    model, tokenizer = load_model(MODEL_ID, device_map=DEVICE, dtype=DTYPE, attn_impl="eager")
+    model, tokenizer = load_model(MODEL_ID, device_map=DEVICE, dtype=DTYPE, attn_impl="sdpa")
     num_layers = model.config.num_hidden_layers
     head_dim = model.config.hidden_size // model.config.num_attention_heads
 
