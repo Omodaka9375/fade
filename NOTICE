@@ -1,0 +1,38 @@
+FADE — Frequency-Adaptive Decay Encoding
+Copyright 2026 Branislav Đalić
+
+This product includes ideas and techniques inspired by the following
+prior work. No code was copied from these projects; FADE contains
+independent implementations.
+
+H2O: Heavy-Hitter Oracle for Efficient Generative Inference of LLMs
+  Zhang et al., 2023 — arXiv:2306.14048
+  The H2O eviction policy (reassign_tiers_h2o) is based on this paper's
+  cumulative attention mass scoring approach.
+
+StreamingLLM: Efficient Streaming Language Models with Attention Sinks
+  Xiao et al., 2023 — arXiv:2309.17453
+  The sink-token + recent-window design and contiguous re-positioning
+  after eviction are inspired by StreamingLLM.
+
+KIVI: A Tuning-Free KV Cache Quantization Algorithm
+  Liu et al., 2024 — arXiv:2402.02750
+  The per-channel K quantization and per-token V quantization strategy
+  in quant.py follows the KIVI design rationale.
+
+TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate
+  Zandieh et al., ICLR 2026 — arXiv:2504.19874
+  The random orthogonal rotation before quantization in rotated_quant.py
+  is inspired by TurboQuant's core technique.
+
+A Simple and Effective L2 Norm-Based Strategy for KV Cache Compression
+  Devoto et al., 2024 — arXiv:2406.11430
+  Referenced in the design of the EMA attention tracker.
+
+This project uses the following open-source libraries:
+  - HuggingFace Transformers (Apache-2.0)
+  - PyTorch (BSD-3-Clause)
+  - Triton (MIT)
+  - scikit-learn (BSD-3-Clause) — optional
+  - turboquant-kv (Apache-2.0) — optional
+  - FastAPI (MIT) — optional
