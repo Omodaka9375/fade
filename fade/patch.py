@@ -135,6 +135,26 @@ def create_tiered_cache(
     cfg = model.config
     # Some multimodal models nest the text config.
     text_cfg = getattr(cfg, "text_config", cfg)
+    model_type = getattr(text_cfg, "model_type", "")
+
+    # D3: Pure-recurrent models (Mamba, RWKV, xLSTM) have no K/V cache.
+    _RECURRENT_TYPES = {"mamba", "mamba2", "rwkv", "rwkv5", "rwkv6", "xlstm"}
+    if model_type in _RECURRENT_TYPES:
+        warnings.warn(
+            f"Model type {model_type!r} is a recurrent architecture with no "
+            f"standard K/V cache. Returning a plain DynamicCache. "
+            f"FADE tier compression is not applicable.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        from fade._compat import DynamicCache
+
+        return DynamicCache()  # type: ignore[return-value]
+
+    # D2: DeepSeek MLA stores already-compressed latent K/V.
+    _DEEPSEEK_TYPES = {"deepseek", "deepseek_r1", "deepseek_r2", "deepseek_v2", "deepseek_v3"}
+    _is_deepseek_mla = model_type in _DEEPSEEK_TYPES
+
     head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
     scheme = extract_rope_scheme(text_cfg, head_dim=head_dim)
     cache_kwargs: dict = {}
@@ -161,6 +181,19 @@ def create_tiered_cache(
         }
         if skip:
             cache.set_skip_layers(skip)
+
+    # D2: DeepSeek MLA — skip all layers (KV is already latent-compressed).
+    if _is_deepseek_mla:
+        warnings.warn(
+            f"Model type {model_type!r} uses Multi-head Latent Attention. "
+            f"K/V are already compressed latent vectors. FADE tier management "
+            f"is disabled (all layers skipped). The cache still works as a "
+            f"DynamicCache for normal inference.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        num_layers = getattr(text_cfg, "num_hidden_layers", 0)
+        cache.set_skip_layers(set(range(num_layers)))
 
     return cache
 

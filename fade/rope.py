@@ -225,6 +225,53 @@ class Proportional(RopeScheme):
 
 
 @dataclass
+class MRope(RopeScheme):
+    """Multi-resolution RoPE (Qwen 3.5/3.6).
+
+    Uses 3D interleaved positions (temporal, height, width) with
+    ``mrope_section`` defining how many frequency dims are allocated to
+    each axis. For text-only inference, all three position axes are
+    identical (same as vanilla RoPE), so the re-RoPE path produces
+    correct results.
+
+    For multimodal (vision+text), the position axes diverge and re-RoPE
+    would need per-axis position tracking. This is tracked as future work;
+    for now, MRope falls back to vanilla RoPE math for the re-RoPE path.
+    """
+
+    partial_rotary_factor: float = 1.0
+    mrope_section: list[int] | None = None
+
+    @property
+    def rotary_dim(self) -> int:
+        return int(self.head_dim * self.partial_rotary_factor)
+
+    def inv_freq(self, device: torch.device) -> Tensor:
+        dim = self.rotary_dim
+        return _vanilla_inv_freq(dim, self.theta, device)
+
+    def compute_cos_sin(
+        self,
+        positions: Tensor,
+        device: torch.device,
+        model_dtype: torch.dtype = torch.float16,
+    ) -> tuple[Tensor, Tensor]:
+        """For text-only: all 3 axes share the same positions → vanilla RoPE."""
+        inv = self.inv_freq(device)
+        freqs = positions.float().unsqueeze(-1) * inv.unsqueeze(0)
+        emb = torch.cat((freqs, freqs), dim=-1)  # [S, rotary_dim]
+
+        # Zero-pad non-rotated dims if partial_rotary_factor < 1.
+        if self.rotary_dim < self.head_dim:
+            pad = self.head_dim - self.rotary_dim
+            emb = torch.cat([emb, torch.zeros(emb.shape[0], pad, device=device)], dim=-1)
+
+        cos = emb.cos().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
+        sin = emb.sin().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
+        return cos, sin
+
+
+@dataclass
 class NoRope(RopeScheme):
     """Sentinel for non-RoPE models (ALiBi, absolute positional embeddings).
 
@@ -343,12 +390,29 @@ def extract_rope_scheme(cfg, head_dim: int | None = None) -> RopeScheme:
             head_dim = getattr(cfg, "hidden_size", 64) // getattr(cfg, "num_attention_heads", 1)
 
     # --- detect non-RoPE models ---
-    # Falcon (ALiBi) sets alibi=True or uses the FalconConfig with no rope_theta.
     if getattr(cfg, "alibi", False):
         return NoRope(theta=theta, head_dim=head_dim)
     model_type = getattr(cfg, "model_type", "")
     if model_type in ("bloom", "mpt"):
         return NoRope(theta=theta, head_dim=head_dim)
+
+    # --- detect M-RoPE (Qwen 3.5/3.6) ---
+    mrope_section = None
+    if isinstance(rp, dict):
+        mrope_section = rp.get("mrope_section")
+    if mrope_section is None:
+        mrope_section = getattr(cfg, "mrope_section", None)
+    prf_global = 1.0
+    if isinstance(rp, dict):
+        prf_global = float(rp.get("partial_rotary_factor", 1.0))
+
+    if mrope_section is not None:
+        return MRope(
+            theta=theta,
+            head_dim=head_dim,
+            partial_rotary_factor=prf_global,
+            mrope_section=list(mrope_section),
+        )
 
     # --- inspect rope_scaling dict ---
     rope_scaling = getattr(cfg, "rope_scaling", None)
@@ -359,10 +423,11 @@ def extract_rope_scheme(cfg, head_dim: int | None = None) -> RopeScheme:
         return Vanilla(theta=theta, head_dim=head_dim)
 
     scale_type = rope_scaling.get("type", rope_scaling.get("rope_type", "")).lower()
-    # Transformers 5.x may set type="default" to mean "vanilla, no scaling".
     if scale_type in ("", "default"):
+        prf = float(rope_scaling.get("partial_rotary_factor", 1.0))
+        if prf < 1.0:
+            return Proportional(theta=theta, head_dim=head_dim, partial_rotary_factor=prf)
         return Vanilla(theta=theta, head_dim=head_dim)
-    # Gemma 4 proportional RoPE.
     if scale_type == "proportional":
         prf = float(rope_scaling.get("partial_rotary_factor", 1.0))
         return Proportional(theta=theta, head_dim=head_dim, partial_rotary_factor=prf)
@@ -411,6 +476,7 @@ def extract_rope_scheme(cfg, head_dim: int | None = None) -> RopeScheme:
 __all__ = [
     "LinearScaled",
     "Llama3",
+    "MRope",
     "NoRope",
     "NtkAware",
     "Proportional",
