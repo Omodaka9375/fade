@@ -66,12 +66,21 @@ def load_model(
         attn_impl = "eager" if need_attentions else "sdpa"
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=dtype,
-        device_map=device_map,
-        attn_implementation=attn_impl,
-    )
+    # transformers >= 5.6 renamed torch_dtype → dtype; try new name first.
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            dtype=dtype,
+            device_map=device_map,
+            attn_implementation=attn_impl,
+        )
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=dtype,
+            device_map=device_map,
+            attn_implementation=attn_impl,
+        )
     model.eval()
     return model, tokenizer
 

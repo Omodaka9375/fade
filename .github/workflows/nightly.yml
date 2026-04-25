@@ -43,7 +43,7 @@ jobs:
           )
           r = run_needle(model, tokenizer, target_tokens=512, device='cpu')
           print(r)
-          print(f'Needle: {"PASS" if r["passed"] else "FAIL"}')
+          print('Needle:', 'PASS' if r['passed'] else 'FAIL')
           "
       - name: Perplexity gate
         run: |
