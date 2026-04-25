@@ -47,9 +47,9 @@ def _unpack_int4_last_dim(packed: Tensor) -> Tensor:
     """Inverse of ``_pack_int4_last_dim``. Returns int8 with values in [-8, 7]."""
     high = ((packed >> 4) & 0xF).to(torch.int16)
     low = (packed & 0xF).to(torch.int16)
-    # Sign-extend 4-bit two's complement: values >= 8 are negative.
-    high = torch.where(high >= 8, high - 16, high).to(torch.int8)
-    low = torch.where(low >= 8, low - 16, low).to(torch.int8)
+    # Branchless sign-extend: subtract twice the sign bit (bit-3).
+    high = (high - ((high & 8) << 1)).to(torch.int8)
+    low = (low - ((low & 8) << 1)).to(torch.int8)
     out_shape = list(packed.shape)
     out_shape[-1] *= 2
     out = torch.empty(out_shape, dtype=torch.int8, device=packed.device)
@@ -69,8 +69,9 @@ def quant_k_int4(k: Tensor) -> tuple[Tensor, Tensor]:
         [B, H, S, D // 2] (uint8) and ``scale`` is [B, H, 1, D] (``k.dtype``).
     """
     absmax = k.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)
+    inv_scale = INT4_MAX / absmax
     scale = absmax / INT4_MAX
-    q = (k / scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
+    q = (k * inv_scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
     return _pack_int4_last_dim(q), scale
 
 
@@ -85,8 +86,9 @@ def quant_v_int4(v: Tensor) -> tuple[Tensor, Tensor]:
         [B, H, S, D // 2] (uint8) and ``scale`` is [B, H, S, 1] (``v.dtype``).
     """
     absmax = v.abs().amax(dim=-1, keepdim=True).clamp(min=EPS)
+    inv_scale = INT4_MAX / absmax
     scale = absmax / INT4_MAX
-    q = (v / scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
+    q = (v * inv_scale).round().clamp(INT4_MIN, INT4_MAX).to(torch.int8)
     return _pack_int4_last_dim(q), scale
 
 
@@ -104,8 +106,9 @@ def quant_k_int2(k: Tensor, group_size: int = DEFAULT_INT2_GROUP_SIZE) -> tuple[
     G = S // group_size
     k_g = k.view(B, H, G, group_size, D)
     absmax = k_g.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)  # [B, H, G, 1, D]
+    inv_scale = INT2_MAX / absmax
     scale = absmax / INT2_MAX
-    q = (k_g / scale).round().clamp(INT2_MIN, INT2_MAX).to(torch.int8)
+    q = (k_g * inv_scale).round().clamp(INT2_MIN, INT2_MAX).to(torch.int8)
     return q.view(B, H, S, D), scale.squeeze(-2)  # scale: [B, H, G, D]
 
 
@@ -141,8 +144,9 @@ def quant_v_int2(v: Tensor, group_size: int = DEFAULT_INT2_GROUP_SIZE) -> tuple[
     G = S // group_size
     v_g = v.view(B, H, G, group_size, D)
     absmax = v_g.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)  # [B, H, G, 1, D]
+    inv_scale = INT2_MAX / absmax
     scale = absmax / INT2_MAX
-    q = (v_g / scale).round().clamp(INT2_MIN, INT2_MAX).to(torch.int8)
+    q = (v_g * inv_scale).round().clamp(INT2_MIN, INT2_MAX).to(torch.int8)
     return q.view(B, H, S, D), scale.squeeze(-2)  # scale: [B, H, G, D]
 
 
@@ -177,6 +181,8 @@ def pad_to_group(x: Tensor, group_size: int) -> tuple[Tensor, int]:
     S = x.shape[-2]
     if S % group_size == 0:
         return x, S
-    pad_n = group_size - (S % group_size)
-    padding = torch.zeros(*x.shape[:-2], pad_n, x.shape[-1], dtype=x.dtype, device=x.device)
-    return torch.cat([x, padding], dim=-2), S
+    # Single alloc + copy instead of alloc padding + torch.cat.
+    total = S + group_size - (S % group_size)
+    padded = torch.zeros(*x.shape[:-2], total, x.shape[-1], dtype=x.dtype, device=x.device)
+    padded[..., :S, :] = x
+    return padded, S

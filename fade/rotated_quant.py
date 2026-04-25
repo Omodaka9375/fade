@@ -54,11 +54,11 @@ def _unpack_int2_last_dim(packed: Tensor) -> Tensor:
     b = ((packed >> 4) & 0x3).to(torch.int8)
     c = ((packed >> 2) & 0x3).to(torch.int8)
     d = (packed & 0x3).to(torch.int8)
-    # Sign-extend: values >= 2 are negative in 2-bit two's complement.
-    a = torch.where(a >= 2, a - 4, a)
-    b = torch.where(b >= 2, b - 4, b)
-    c = torch.where(c >= 2, c - 4, c)
-    d = torch.where(d >= 2, d - 4, d)
+    # Branchless sign-extend: subtract twice the sign bit (bit-1).
+    a = a - ((a & 2) << 1)
+    b = b - ((b & 2) << 1)
+    c = c - ((c & 2) << 1)
+    d = d - ((d & 2) << 1)
     out_shape = list(packed.shape)
     out_shape[-1] *= 4
     out = torch.empty(out_shape, dtype=torch.int8, device=packed.device)
@@ -116,8 +116,9 @@ def rotated_quant_k(
     k_rot = k_f @ R.to(k.device).T
 
     absmax = k_rot.abs().amax(dim=-2, keepdim=True).clamp(min=EPS)
+    inv_scale = qmax / absmax
     scale = absmax / qmax
-    q = (k_rot / scale).round().clamp(qmin, qmax).to(torch.int8)
+    q = (k_rot * inv_scale).round().clamp(qmin, qmax).to(torch.int8)
     packed = _pack(q, bits)
     return packed, scale.to(k.dtype)
 
@@ -155,8 +156,9 @@ def rotated_quant_v(
     v_rot = v_f @ R.to(v.device).T
 
     absmax = v_rot.abs().amax(dim=-1, keepdim=True).clamp(min=EPS)
+    inv_scale = qmax / absmax
     scale = absmax / qmax
-    q = (v_rot / scale).round().clamp(qmin, qmax).to(torch.int8)
+    q = (v_rot * inv_scale).round().clamp(qmin, qmax).to(torch.int8)
     packed = _pack(q, bits)
     return packed, scale.to(v.dtype)
 

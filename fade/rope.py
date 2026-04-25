@@ -53,9 +53,21 @@ class RopeScheme:
     theta: float = DEFAULT_ROPE_THETA
     head_dim: int = 64
 
-    def inv_freq(self, device: torch.device) -> Tensor:
-        """Return ``[head_dim // 2]`` inverse-frequency tensor."""
+    def __post_init__(self) -> None:
+        self._inv_freq_cache: dict[torch.device, Tensor] = {}
+
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
+        """Override in subclasses to compute raw inv_freq."""
         return _vanilla_inv_freq(self.head_dim, self.theta, device)
+
+    def inv_freq(self, device: torch.device) -> Tensor:
+        """Return cached ``[head_dim // 2]`` inverse-frequency tensor."""
+        cached = self._inv_freq_cache.get(device)
+        if cached is not None:
+            return cached
+        inv = self._compute_inv_freq(device)
+        self._inv_freq_cache[device] = inv
+        return inv
 
     def compute_cos_sin(
         self,
@@ -71,8 +83,13 @@ class RopeScheme:
         inv = self.inv_freq(device)
         freqs = positions.float().unsqueeze(-1) * inv.unsqueeze(0)  # [S, hd//2]
         emb = torch.cat((freqs, freqs), dim=-1)  # [S, hd]
-        cos = emb.cos().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
-        sin = emb.sin().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
+        # bf16 shares fp32's exponent range; skip the lossy round-trip.
+        if model_dtype == torch.bfloat16:
+            cos = emb.cos().unsqueeze(0).unsqueeze(0)
+            sin = emb.sin().unsqueeze(0).unsqueeze(0)
+        else:
+            cos = emb.cos().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
+            sin = emb.sin().to(model_dtype).float().unsqueeze(0).unsqueeze(0)
         return cos, sin
 
     @property
@@ -122,27 +139,22 @@ class Llama3(RopeScheme):
     high_freq_factor: float = DEFAULT_HIGH_FREQ_FACTOR
     original_max_position_embeddings: int = DEFAULT_ORIGINAL_MAX_POS
 
-    def inv_freq(self, device: torch.device) -> Tensor:
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
         base_inv = _vanilla_inv_freq(self.head_dim, self.theta, device)
         old_ctx = float(self.original_max_position_embeddings)
         low_len = old_ctx / self.low_freq_factor
         high_len = old_ctx / self.high_freq_factor
 
-        new_inv = torch.empty_like(base_inv)
-        for i in range(base_inv.shape[0]):
-            freq = base_inv[i].item()
-            wavelength = 2.0 * math.pi / freq
-            if wavelength < high_len:
-                new_inv[i] = freq  # high-frequency: keep
-            elif wavelength > low_len:
-                new_inv[i] = freq / self.factor  # low-frequency: interpolate
-            else:
-                # Mid-range: smooth linear blend.
-                t = (old_ctx / wavelength - self.low_freq_factor) / (
-                    self.high_freq_factor - self.low_freq_factor
-                )
-                new_inv[i] = freq * (1 - t) / self.factor + freq * t
-        return new_inv
+        wavelength = 2.0 * math.pi / base_inv
+        t = (old_ctx / wavelength - self.low_freq_factor) / (
+            self.high_freq_factor - self.low_freq_factor
+        )
+        blended = base_inv * (1 - t) / self.factor + base_inv * t
+        return torch.where(
+            wavelength < high_len,
+            base_inv,
+            torch.where(wavelength > low_len, base_inv / self.factor, blended),
+        )
 
 
 @dataclass
@@ -151,7 +163,7 @@ class NtkAware(RopeScheme):
 
     factor: float = DEFAULT_FACTOR
 
-    def inv_freq(self, device: torch.device) -> Tensor:
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
         scaled_theta = self.theta * self.factor
         return _vanilla_inv_freq(self.head_dim, scaled_theta, device)
 
@@ -169,27 +181,16 @@ class Yarn(RopeScheme):
     beta_slow: float = DEFAULT_YARN_BETA_SLOW
     original_max_position_embeddings: int = DEFAULT_ORIGINAL_MAX_POS
 
-    def _yarn_ramp(self, dim_idx: float) -> float:
-        """Linear ramp between beta_fast and beta_slow."""
-        low = self.beta_fast * self.head_dim / (2 * math.pi * self.original_max_position_embeddings)
-        high = (
-            self.beta_slow * self.head_dim / (2 * math.pi * self.original_max_position_embeddings)
-        )
-        if dim_idx < low:
-            return 0.0
-        if dim_idx > high:
-            return 1.0
-        return (dim_idx - low) / (high - low)
-
-    def inv_freq(self, device: torch.device) -> Tensor:
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
         base_inv = _vanilla_inv_freq(self.head_dim, self.theta, device)
-        new_inv = torch.empty_like(base_inv)
-        for i in range(base_inv.shape[0]):
-            ramp_val = self._yarn_ramp(float(i))
-            # Blend between original and NTK-scaled.
-            ntk_inv = _vanilla_inv_freq(self.head_dim, self.theta * self.factor, device)[i]
-            new_inv[i] = (1.0 - ramp_val) * base_inv[i] / self.factor + ramp_val * ntk_inv
-        return new_inv
+        ntk_inv = _vanilla_inv_freq(self.head_dim, self.theta * self.factor, device)
+        # Vectorized ramp over dim indices.
+        dim_idx = torch.arange(base_inv.shape[0], dtype=torch.float32, device=device)
+        denom = 2 * math.pi * self.original_max_position_embeddings
+        low = self.beta_fast * self.head_dim / denom
+        high = self.beta_slow * self.head_dim / denom
+        ramp = ((dim_idx - low) / (high - low)).clamp(0.0, 1.0)
+        return (1.0 - ramp) * base_inv / self.factor + ramp * ntk_inv
 
 
 @dataclass
@@ -210,7 +211,7 @@ class Proportional(RopeScheme):
     def rotary_dim(self) -> int:
         return int(self.head_dim * self.partial_rotary_factor)
 
-    def inv_freq(self, device: torch.device) -> Tensor:
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
         # Rotated dims: use head_dim as denominator (not rotary_dim).
         rope_angles = self.rotary_dim // 2
         freq_exponents = (
@@ -246,7 +247,7 @@ class MRope(RopeScheme):
     def rotary_dim(self) -> int:
         return int(self.head_dim * self.partial_rotary_factor)
 
-    def inv_freq(self, device: torch.device) -> Tensor:
+    def _compute_inv_freq(self, device: torch.device) -> Tensor:
         dim = self.rotary_dim
         return _vanilla_inv_freq(dim, self.theta, device)
 

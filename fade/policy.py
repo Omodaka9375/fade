@@ -261,14 +261,14 @@ def _assign_one_layer(
         return tiers
 
     middle_scores = scores[middle_idx]
-    top4 = middle_scores.topk(int4_budget).indices
-    tiers[middle_idx[top4]] = TIER_INT4
+    # Single sort replaces two separate topk calls.
+    sorted_idx = middle_scores.argsort(descending=True)
+    tiers[middle_idx[sorted_idx[:int4_budget]]] = TIER_INT4
 
-    remaining_idx = (tiers == TIER_EVICT).nonzero(as_tuple=False).squeeze(-1)
-    if remaining_idx.numel() > 0 and int2_budget > 0:
-        remaining_scores = scores[remaining_idx]
-        k2 = min(int2_budget, remaining_idx.numel())
-        top2 = remaining_scores.topk(k2).indices
-        tiers[remaining_idx[top2]] = TIER_INT2
+    if int2_budget > 0:
+        n_remaining = sorted_idx.shape[0] - int4_budget
+        k2 = min(int2_budget, n_remaining)
+        if k2 > 0:
+            tiers[middle_idx[sorted_idx[int4_budget : int4_budget + k2]]] = TIER_INT2
 
     return tiers

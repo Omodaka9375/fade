@@ -857,21 +857,24 @@ class TieredKVCache(DynamicCache):
             )
         tiers = tiers.to(pos_full.device)
 
-        has_eviction = (tiers == TIER_EVICT).any().item()
+        keep_mask = tiers != TIER_EVICT
+        n_kept = int(keep_mask.sum().item())  # single host sync
 
-        if has_eviction:
-            # --- Re-RoPE: undo at old positions, redo at new contiguous ones ---
-            keep_mask = tiers != TIER_EVICT
-            n_kept = int(keep_mask.sum().item())
-            old_cos, old_sin = self._compute_cos_sin(pos_full, pos_full.device)
-            k_pre_rope = self._inverse_rope(k_full, old_cos, old_sin)
+        if n_kept < S:
             new_pos = self._streamingllm_positions(n_kept, pos_full.device)
+            # Fuse old + new cos/sin into a single batch to halve kernel launches.
+            all_pos = torch.cat([pos_full, new_pos])
+            all_cos, all_sin = self._compute_cos_sin(all_pos, pos_full.device)
+            old_cos = all_cos[..., :S, :]
+            old_sin = all_sin[..., :S, :]
+            new_cos = all_cos[..., S:, :]
+            new_sin = all_sin[..., S:, :]
+            k_pre_rope = self._inverse_rope(k_full, old_cos, old_sin)
             # Build a mapping: for each kept token, what is its index in the
             # dense [0..n_kept) range? We keep the original ordering.
             keep_indices = keep_mask.nonzero(as_tuple=False).squeeze(-1)
             k_pre_kept = k_pre_rope.index_select(-2, keep_indices).contiguous()
             v_kept = v_full.index_select(-2, keep_indices).contiguous()
-            new_cos, new_sin = self._compute_cos_sin(new_pos, pos_full.device)
             k_full = self._apply_rope(k_pre_kept, new_cos, new_sin)
             v_full = v_kept
             # Re-label tiers to exclude evicted entries.
@@ -887,11 +890,23 @@ class TieredKVCache(DynamicCache):
             state.fp16_pos = pos_full.index_select(0, fp16_idx).contiguous()
         else:
             state.fp16_k = state.fp16_v = state.fp16_pos = None
-        # Reset the pre-alloc buffer — fp16_k/v/pos were replaced wholesale.
-        state._fp16_buf_k = None
-        state._fp16_buf_v = None
-        state._fp16_buf_pos = None
-        state._fp16_len = 0
+        # Reseed the pre-alloc buffer to avoid reallocation on the next append.
+        n_fp16 = int(state.fp16_k.shape[-2]) if state.fp16_k is not None else 0
+        if n_fp16 > 0 and state._fp16_buf_k is not None and n_fp16 <= state._fp16_buf_k.shape[-2]:
+            state._fp16_buf_k[:, :, :n_fp16, :] = state.fp16_k
+            state._fp16_buf_v[:, :, :n_fp16, :] = state.fp16_v
+            state._fp16_buf_pos[:n_fp16] = state.fp16_pos
+            state._fp16_len = n_fp16
+            # Expose views so subsequent reads go through the buffer.
+            state.fp16_k = state._fp16_buf_k[:, :, :n_fp16, :]
+            state.fp16_v = state._fp16_buf_v[:, :, :n_fp16, :]
+            state.fp16_pos = state._fp16_buf_pos[:n_fp16]
+        else:
+            # Buffer too small or absent — let _append_fp16 re-init.
+            state._fp16_buf_k = None
+            state._fp16_buf_v = None
+            state._fp16_buf_pos = None
+            state._fp16_len = 0
 
         int4_idx = (tiers == TIER_INT4).nonzero(as_tuple=False).squeeze(-1)
         if int4_idx.numel() > 0:
@@ -1022,10 +1037,9 @@ class TieredKVCache(DynamicCache):
             row_k = k_full[b : b + 1]  # [1, H, S, D]
             row_v = v_full[b : b + 1]
 
-            has_eviction = (row_tiers == TIER_EVICT).any().item()
-            if has_eviction:
-                keep_mask = row_tiers != TIER_EVICT
-                n_kept = int(keep_mask.sum().item())
+            keep_mask = row_tiers != TIER_EVICT
+            n_kept = int(keep_mask.sum().item())  # single host sync
+            if n_kept < int(row_tiers.shape[0]):
                 old_cos, old_sin = self._compute_cos_sin(pos_full, device)
                 k_pre = self._inverse_rope(row_k, old_cos, old_sin)
                 keep_idx = keep_mask.nonzero(as_tuple=False).squeeze(-1)
@@ -1094,11 +1108,21 @@ class TieredKVCache(DynamicCache):
         else:
             state.fp16_k = state.fp16_v = state.fp16_pos = None
 
-        # Reset pre-alloc buffer.
-        state._fp16_buf_k = None
-        state._fp16_buf_v = None
-        state._fp16_buf_pos = None
-        state._fp16_len = 0
+        # Reseed the pre-alloc buffer to avoid reallocation on the next append.
+        n_fp16 = int(state.fp16_k.shape[-2]) if state.fp16_k is not None else 0
+        if n_fp16 > 0 and state._fp16_buf_k is not None and n_fp16 <= state._fp16_buf_k.shape[-2]:
+            state._fp16_buf_k[:, :, :n_fp16, :] = state.fp16_k
+            state._fp16_buf_v[:, :, :n_fp16, :] = state.fp16_v
+            state._fp16_buf_pos[:n_fp16] = state.fp16_pos
+            state._fp16_len = n_fp16
+            state.fp16_k = state._fp16_buf_k[:, :, :n_fp16, :]
+            state.fp16_v = state._fp16_buf_v[:, :, :n_fp16, :]
+            state.fp16_pos = state._fp16_buf_pos[:n_fp16]
+        else:
+            state._fp16_buf_k = None
+            state._fp16_buf_v = None
+            state._fp16_buf_pos = None
+            state._fp16_len = 0
 
         # INT4 tier.
         int4_k = _pad_and_stack(int4_k_rows)
