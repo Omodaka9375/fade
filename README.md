@@ -44,25 +44,25 @@ flowchart LR
     style E fill:#9E9E9E,color:#fff
 ```
 
-### Compression comparison
+### Compression at a glance
 
-```mermaid
-xychart-beta
-    title "KV Cache Compression (Qwen2.5-0.5B, 2K tokens)"
-    x-axis ["Baseline", "Safe INT4", "Rotated 2b", "Balanced", "Aggressive"]
-    y-axis "KV Cache (MiB)" 0 --> 25
-    bar [24.0, 6.78, 3.88, 2.01, 1.03]
-```
+| Config | KV cache | Compression |
+|--------|----------|:-----------:|
+| Baseline FP16 | 24.00 MiB | 1× |
+| Safe (INT4) | 6.78 MiB | **3.5×** |
+| Rotated 2-bit | 3.88 MiB | **6.2×** |
+| Balanced (eviction) | 2.01 MiB | **11.9×** |
+| Aggressive | 1.03 MiB | **23.3×** |
 
-### Fused kernel speedup
+> Qwen2.5-0.5B-Instruct, 2048 tokens, RTX 3060. Needle: 3/3 PASS. PPL: 1.24.
 
-```mermaid
-xychart-beta
-    title "Attention Latency (S_k=2048, D=128, RTX 3060)"
-    x-axis ["FP16 SDPA", "Fused INT4", "Dequant+SDPA"]
-    y-axis "Latency (ms)" 0 --> 1
-    bar [0.133, 0.189, 0.932]
-```
+### Fused kernel speed
+
+| Path | Latency | vs FP16 |
+|------|:-------:|:-------:|
+| FP16 FlashAttention | 0.133 ms | 1.0× |
+| **Fused INT4 (FADE)** | **0.189 ms** | **1.4×** |
+| Dequant + SDPA (old) | 0.932 ms | 7.0× |
 
 ### How FADE compares (2026)
 
