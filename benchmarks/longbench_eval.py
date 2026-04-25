@@ -109,19 +109,36 @@ def score_sample(prediction: str, references: list[str], task: str) -> float:
 def load_longbench_task(task: str, max_samples: int) -> list[dict]:
     """Load a LongBench task from HuggingFace.
 
-    Uses the auto-converted Parquet branch when available, falls back
-    to downloading the JSONL directly from the dataset repo.
+    Tries multiple loading strategies in order:
+    1. ``load_dataset`` with ``trust_remote_code`` (datasets <= 3.2)
+    2. ``load_dataset`` without trust_remote_code (auto-converted Parquet)
+    3. Download ``data.zip`` and extract the JSONL
     """
     import json
 
-    # Try Parquet branch first (works with all datasets versions).
+    rows = None
+
+    # Strategy 1: trust_remote_code (works with datasets <= 3.2).
     try:
         from datasets import load_dataset
 
-        ds = load_dataset("THUDM/LongBench", task, split="test", revision="refs/convert/parquet")
+        ds = load_dataset("THUDM/LongBench", task, split="test", trust_remote_code=True)
         rows = list(ds)
     except Exception:
-        # Fall back to downloading JSONL directly.
+        pass
+
+    # Strategy 2: plain load_dataset (newer datasets with auto-Parquet).
+    if rows is None:
+        try:
+            from datasets import load_dataset
+
+            ds = load_dataset("THUDM/LongBench", task, split="test")
+            rows = list(ds)
+        except Exception:
+            pass
+
+    # Strategy 3: download data.zip and extract the JSONL.
+    if rows is None:
         try:
             from huggingface_hub import hf_hub_download
         except ImportError as e:
@@ -130,13 +147,17 @@ def load_longbench_task(task: str, max_samples: int) -> list[dict]:
                 "Install with: pip install fade-kv[eval]"
             ) from e
 
-        local = hf_hub_download(
-            repo_id="THUDM/LongBench",
-            filename=f"data/{task}.jsonl",
-            repo_type="dataset",
+        import io
+        import zipfile
+
+        zip_path = hf_hub_download(
+            repo_id="THUDM/LongBench", filename="data.zip", repo_type="dataset"
         )
-        with open(local, encoding="utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
+        with zipfile.ZipFile(zip_path) as zf:
+            jsonl_name = f"data/{task}.jsonl"
+            with zf.open(jsonl_name) as f:
+                text = io.TextIOWrapper(f, encoding="utf-8").read()
+                rows = [json.loads(line) for line in text.splitlines() if line.strip()]
 
     samples = []
     for i, row in enumerate(rows):
