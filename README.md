@@ -263,7 +263,21 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 | Balanced (eviction) | 9.30 MiB | **12.0×** | 13.3 tok/s |
 | Aggressive | 4.77 MiB | **23.5×** | 13.3 tok/s |
 
-> NVIDIA DGX Spark (Grace Blackwell, 128 GB). Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 6.56.
+> Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 6.56.
+
+### DGX Spark — Mistral-7B-Instruct-v0.3 (2048 tokens)
+
+| Config | KV cache | Compression | Decode TPS |
+|--------|----------|:-----------:|:----------:|
+| Baseline FP16 | 256.00 MiB | 1.0× | 15.3 tok/s |
+| Safe (INT4) | 71.40 MiB | **3.6×** | 15.2 tok/s |
+| Rotated 2-bit | 40.47 MiB | **6.3×** | 15.2 tok/s |
+| Balanced (eviction) | 21.26 MiB | **12.0×** | 15.2 tok/s |
+| Aggressive | 10.91 MiB | **23.5×** | 15.2 tok/s |
+
+> Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 4.98.
+
+> All DGX Spark benchmarks: NVIDIA DGX Spark (Grace Blackwell, 128 GB unified memory).
 
 ### RTX 3060 — Qwen2.5-0.5B-Instruct (2048 tokens)
 
