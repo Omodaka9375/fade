@@ -2,6 +2,58 @@
 All notable changes to FADE will be documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.0.0] — Production-ready release (DGX Spark validated)
+### Added
+- **Dedicated sink buffer (C3)**: sink tokens (`sink_k/v/pos`) allocated once
+  on first reassignment and never modified. FP16 buffer now holds only
+  recent-window tokens, eliminating per-assemble sink slicing.
+- **Running byte counter (C4)**: `compressed_storage_bytes()` is now O(1)
+  via `_compressed_bytes` counter updated on every `apply_tier_assignment`.
+  Falls back to full tensor walk pre-first-reassignment.
+- **Server productionization (D1–D5)**:
+  - `SessionStore` with LRU cap (64) and TTL (600s) for multi-turn KV reuse
+    via `X-Session-Id` header.
+  - SSE streaming (`stream: true`) with OpenAI-compatible chunk format.
+  - Async decode via `asyncio.to_thread` (non-blocking server).
+  - Conditional H2O downgrade: only falls back to position eviction when
+    `prompt_len > prefill_track_limit` (was unconditional).
+  - Server version bumped to 0.9.0; default `attn_impl` switched to `sdpa`.
+- **DGX Spark test hardening (E1–E3)**:
+  - `dgx` pytest marker for tests requiring ≥80GB GPU memory.
+  - `tests/test_7b_integration.py`: Qwen2.5-7B prefill + 64 decode steps
+    with safe/balanced/aggressive presets, compression assertions, needle.
+  - `tests/test_fused_blackwell.py`: fused INT4 SDPA parity, causal mask,
+    and GQA broadcast on Blackwell SM120+.
+- **DGX Spark benchmarks**: 4 models validated (Qwen2.5-0.5B, Qwen2.5-7B,
+  Mistral-7B, Llama-3.1-8B). All 4/4 needle PASS, consistent 3.5–23.5×
+  compression, <2% TPS overhead. WikiText-2 PPL baselines recorded.
+- Updated `examples/quickstart.py` and Colab notebook for v0.9.0.
+### Changed
+- Checkpoint serialization (`_LAYER_TENSOR_KEYS`) now includes `sink_k/v/pos`.
+- `dump_debug()` includes `sink_positions` in JSON output.
+- `total_seq_length()` counts `sink_pos` separately from `fp16_pos`.
+
+## [0.9.0] — Benchmark infrastructure + README corrections
+### Added
+- **`benchmarks/production_suite.py`**: multi-model benchmark harness.
+  Measures WikiText-2 delta-PPL, needle at 4 depths (512–4096), KV memory,
+  compression ratio, and decode TPS across configurable models × presets.
+  Outputs JSON + markdown summary.
+- **`benchmarks/longbench_eval.py`**: LongBench subset evaluation (6 tasks:
+  qasper, multifieldqa_en, hotpotqa, 2wikimqa, gov_report, multi_news).
+  F1/ROUGE-L scoring with baseline vs FADE preset comparison.
+- **`fade/eval/wikitext_ppl.py`**: WikiText-2 perplexity via HF `datasets`.
+  `wikitext2_perplexity()` and `wikitext2_delta_ppl()` for standard metric.
+### Changed
+- **README comparison table corrected**:
+  - kvpress: 30+ methods, partial re-RoPE, pipeline + context manager API.
+  - TurboQuant: 1K+ stars, ICLR 2026, vLLM/SGLang integration.
+  - KVTC: 6–20× compression, NVIDIA ICLR 2026.
+  - FADE: hero compression qualified to 3.5–12× (23× aggressive).
+- PPL 1.24 clarified as baseline FP16 (not compressed).
+- Removed unverified “100% greedy match” claim.
+- Added KVTC citation.
+
 ## [0.8.0] — Phase 3 optimization (Triton kernels + rotated backend)
 ### Changed
 - **Fused kernel**: `@triton.autotune` with 5 configs (BLOCK_M 16–128,
