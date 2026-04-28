@@ -103,9 +103,9 @@ def wikitext2_fade_ppl(
 ) -> float:
     """Compute WikiText-2 PPL with FADE cache compression.
 
-    Creates a fresh FADE cache per sliding window, passes it to the
-    model via ``past_key_values``, and measures NLL on the tail tokens.
-    This captures the actual quality degradation from compression.
+    Feeds each sliding window through the model in chunks, triggers
+    tier reassignment after each chunk so tokens actually get compressed
+    to INT4/INT2/evicted. Measures NLL on tail tokens.
 
     Args:
         model: HuggingFace causal LM.
@@ -120,6 +120,7 @@ def wikitext2_fade_ppl(
         Perplexity (float). Compare with ``wikitext2_perplexity()`` for delta.
     """
     from fade import FadeConfig, create_tiered_cache
+    from fade.policy import reassign_tiers_by_position
 
     text = _load_wikitext2(split)
     enc = tokenizer(text, return_tensors="pt")
@@ -132,6 +133,7 @@ def wikitext2_fade_ppl(
         config = config.with_overrides(eviction_policy="position")
 
     dtype = next(model.parameters()).dtype
+    num_layers = model.config.num_hidden_layers
 
     nlls: list[torch.Tensor] = []
     prev_end = 0
@@ -142,11 +144,30 @@ def wikitext2_fade_ppl(
         window = input_ids[:, begin:end]
         target = window.clone()
         target[:, :-trg_len] = -100
+        window_len = end - begin
 
-        # Fresh FADE cache per window (matches sliding-window semantics).
+        # Fresh FADE cache per window.
         cache = create_tiered_cache(model, dtype=dtype, config=config)
-        out = model(window, labels=target, past_key_values=cache, use_cache=True)
-        nlls.append(out.loss.float() * trg_len)
+
+        # Feed the window in two halves: first half triggers tier assignment,
+        # second half computes loss with compressed context.
+        split_at = max(window_len // 2, 1)
+        prefix = window[:, :split_at]
+        suffix = window[:, split_at:]
+        suffix_target = target[:, split_at:]
+
+        # Prefill the first half — tokens go into FP16.
+        model(prefix, past_key_values=cache, use_cache=True)
+
+        # Force tier reassignment — compresses middle tokens to INT4.
+        reassign_tiers_by_position(cache, num_layers)
+
+        # Evaluate loss on the second half with compressed context.
+        out = model(suffix, labels=suffix_target, past_key_values=cache, use_cache=True)
+        # Scale loss to the original trg_len accounting for the suffix only.
+        suffix_trg = suffix_target.ne(-100).sum().item()
+        if suffix_trg > 0:
+            nlls.append(out.loss.float() * suffix_trg)
 
         prev_end = end
         if end == seq_len:
