@@ -134,47 +134,37 @@ def wikitext2_fade_ppl(
 
     dtype = next(model.parameters()).dtype
     num_layers = model.config.num_hidden_layers
+    reassign_every = config.reassign_every
 
+    # Use a single persistent cache across the entire corpus.
+    # Tier reassignment runs periodically, compressing older tokens.
+    cache = create_tiered_cache(model, dtype=dtype, config=config)
     nlls: list[torch.Tensor] = []
-    prev_end = 0
+    total_tokens = 0
+    chunk_size = 64  # Process corpus in small chunks to trigger reassignment
 
-    for begin in tqdm(range(0, seq_len, stride), desc=f"fade-ppl-{preset}", leave=False):
-        end = min(begin + max_length, seq_len)
-        trg_len = end - prev_end
-        window = input_ids[:, begin:end]
-        target = window.clone()
-        target[:, :-trg_len] = -100
-        window_len = end - begin
+    for start in tqdm(range(0, seq_len - 1, chunk_size), desc=f"fade-ppl-{preset}", leave=False):
+        end = min(start + chunk_size, seq_len - 1)
+        chunk = input_ids[:, start : end + 1]  # +1 for the label shift
+        chunk_input = chunk[:, :-1]
+        chunk_labels = chunk[:, 1:]
 
-        # Fresh FADE cache per window.
-        cache = create_tiered_cache(model, dtype=dtype, config=config)
+        # Forward through FADE cache (K/V from previous chunks are compressed).
+        out = model(chunk_input, past_key_values=cache, use_cache=True)
+        logits = out.logits  # [B, chunk_len, vocab]
 
-        # Feed the window in two halves: first half triggers tier assignment,
-        # second half computes loss with compressed context.
-        split_at = max(window_len // 2, 1)
-        prefix = window[:, :split_at]
-        suffix = window[:, split_at:]
-        suffix_target = target[:, split_at:]
+        # Compute per-token cross-entropy loss.
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="sum")
+        loss = loss_fn(logits.view(-1, logits.size(-1)), chunk_labels.reshape(-1))
+        nlls.append(loss.float())
+        total_tokens += chunk_labels.numel()
 
-        # Prefill the first half — tokens go into FP16.
-        model(prefix, past_key_values=cache, use_cache=True)
-
-        # Force tier reassignment — compresses middle tokens to INT4.
-        reassign_tiers_by_position(cache, num_layers)
-
-        # Evaluate loss on the second half with compressed context.
-        out = model(suffix, labels=suffix_target, past_key_values=cache, use_cache=True)
-        # Scale loss to the original trg_len accounting for the suffix only.
-        suffix_trg = suffix_target.ne(-100).sum().item()
-        if suffix_trg > 0:
-            nlls.append(out.loss.float() * suffix_trg)
-
-        prev_end = end
-        if end == seq_len:
-            break
+        # Periodic tier reassignment — this is where compression happens.
+        if cache.get_seq_length(0) > reassign_every:
+            reassign_tiers_by_position(cache, num_layers)
 
     total_nll = torch.stack(nlls).sum()
-    return math.exp(total_nll.item() / seq_len)
+    return math.exp(total_nll.item() / total_tokens)
 
 
 def wikitext2_delta_ppl(
