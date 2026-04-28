@@ -207,9 +207,31 @@ def benchmark_model(model_id: str, skip_ppl: bool = False) -> dict:
         baseline_ppl = run_wikitext2_ppl(model, tokenizer)
         result["wikitext2_ppl"] = baseline_ppl
         if baseline_ppl is not None:
-            print(f"  Baseline PPL: {baseline_ppl}")
+            print(f"  Baseline FP16 PPL: {baseline_ppl}")
+
+        # Delta-PPL per FADE preset (P2).
+        delta_ppl_results = []
+        for preset_name in ["safe", "balanced", "aggressive"]:
+            print(f"  {preset_name}...", end=" ", flush=True)
+            try:
+                from fade.eval.wikitext_ppl import wikitext2_fade_ppl
+
+                ppl = round(
+                    wikitext2_fade_ppl(model, tokenizer, preset=preset_name, device=DEVICE), 4
+                )
+                delta = round(ppl - baseline_ppl, 4) if baseline_ppl else 0
+                delta_pct = round((delta / baseline_ppl) * 100, 2) if baseline_ppl else 0
+                print(f"PPL {ppl} (delta {delta:+.4f}, {delta_pct:+.2f}%)")
+                delta_ppl_results.append(
+                    {"preset": preset_name, "ppl": ppl, "delta": delta, "delta_pct": delta_pct}
+                )
+            except Exception as e:
+                print(f"ERROR: {e}")
+                delta_ppl_results.append({"preset": preset_name, "error": str(e)})
+        result["delta_ppl"] = delta_ppl_results
     else:
         result["wikitext2_ppl"] = None
+        result["delta_ppl"] = None
         print("\n--- WikiText-2 PPL skipped ---")
 
     # --- Needle ---
