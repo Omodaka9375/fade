@@ -30,7 +30,6 @@ import torch
 
 from fade import FadeConfig, create_tiered_cache
 from fade.patch import load_model
-from fade.policy import reassign_tiers_by_position
 
 # --- configuration (top of file for easy override) -------------------------- #
 DEFAULT_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
@@ -47,6 +46,7 @@ DEFAULT_TASKS: list[str] = [
 ]
 DEFAULT_MAX_SAMPLES: int = 50
 DEFAULT_MAX_NEW_TOKENS: int = 128
+DEFAULT_MAX_INPUT_TOKENS: int = 0  # 0 = use model's max_position_embeddings
 REASSIGN_EVERY: int = 64
 
 
@@ -174,6 +174,34 @@ def load_longbench_task(task: str, max_samples: int) -> list[dict]:
     return samples
 
 
+# --- prompt building -------------------------------------------------------- #
+def _build_prompt(tokenizer, context: str, question: str, task: str) -> str:
+    """Build a proper prompt using the model's chat template."""
+    if "report" in task or "news" in task:
+        user_msg = f"{context}\n\nWrite a summary of the above text."
+    else:
+        user_msg = f"{context}\n\nBased only on the above context, answer: {question}"
+
+    if hasattr(tokenizer, "apply_chat_template"):
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": user_msg}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    return f"{user_msg}\nAnswer:"
+
+
+def _get_max_input_tokens(model, override: int = 0) -> int:
+    """Resolve max input tokens from model config or override."""
+    if override > 0:
+        return override
+    cfg = getattr(model, "config", None)
+    text_cfg = getattr(cfg, "text_config", cfg)
+    max_pos = getattr(text_cfg, "max_position_embeddings", 32768)
+    # Leave room for generation.
+    return min(max_pos, 32768)
+
+
 # --- generation ------------------------------------------------------------- #
 @torch.no_grad()
 def generate_with_fade(
@@ -182,11 +210,18 @@ def generate_with_fade(
     prompt: str,
     preset: str | None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    max_input_tokens: int = 0,
 ) -> str:
-    """Generate a response using FADE cache (or baseline if preset is None)."""
-    enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=8192).to(DEVICE)
+    """Generate using model.generate() for both baseline and FADE paths.
+
+    Uses model.generate(past_key_values=cache) for FADE presets so the
+    generation path is identical to baseline (fair comparison).
+    """
+    max_len = max_input_tokens if max_input_tokens > 0 else _get_max_input_tokens(model)
+    enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_len).to(DEVICE)
 
     if preset is None:
+        # Baseline: plain model.generate().
         out = model.generate(
             **enc,
             max_new_tokens=max_new_tokens,
@@ -194,32 +229,20 @@ def generate_with_fade(
             pad_token_id=tokenizer.eos_token_id,
         )
     else:
+        # FADE: model.generate() with tiered cache (drop-in path).
         preset_fn = getattr(FadeConfig, preset, FadeConfig.safe)
         config = preset_fn()
         if config.eviction_policy == "h2o":
             config = config.with_overrides(eviction_policy="position")
 
         cache = create_tiered_cache(model, dtype=DTYPE, config=config)
-        num_layers = model.config.num_hidden_layers
-
-        # Prefill.
-        out_obj = model(enc.input_ids, past_key_values=cache, use_cache=True)
-        reassign_tiers_by_position(cache, num_layers)
-
-        # Decode.
-        next_tok = out_obj.logits[:, -1:, :].argmax(dim=-1)
-        generated = [next_tok]
-        for step in range(max_new_tokens - 1):
-            out_obj = model(next_tok, past_key_values=cache, use_cache=True)
-            next_tok = out_obj.logits[:, -1:, :].argmax(dim=-1)
-            generated.append(next_tok)
-            if (step + 1) % REASSIGN_EVERY == 0:
-                reassign_tiers_by_position(cache, num_layers)
-            if tokenizer.eos_token_id is not None and next_tok.item() == tokenizer.eos_token_id:
-                break
-
-        gen_ids = torch.cat(generated, dim=-1)
-        return tokenizer.decode(gen_ids[0], skip_special_tokens=True)
+        out = model.generate(
+            **enc,
+            past_key_values=cache,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
 
     return tokenizer.decode(out[0, enc.input_ids.shape[1] :], skip_special_tokens=True)
 
@@ -231,14 +254,18 @@ def evaluate_task(
     task: str,
     preset: str | None,
     max_samples: int,
+    max_input_tokens: int = 0,
 ) -> dict:
     """Evaluate one task with one preset."""
     samples = load_longbench_task(task, max_samples)
+    resolved_max = _get_max_input_tokens(model, max_input_tokens)
     scores = []
 
     for i, sample in enumerate(samples):
-        prompt = f"Context:\n{sample['context']}\n\nQuestion: {sample['input']}\nAnswer:"
-        prediction = generate_with_fade(model, tokenizer, prompt, preset)
+        prompt = _build_prompt(tokenizer, sample["context"], sample["input"], task)
+        prediction = generate_with_fade(
+            model, tokenizer, prompt, preset, max_input_tokens=resolved_max
+        )
         s = score_sample(prediction, sample["answers"], task)
         scores.append(s)
         if (i + 1) % 10 == 0:
@@ -260,6 +287,12 @@ def main() -> None:
     parser.add_argument("--tasks", type=str, nargs="+", default=DEFAULT_TASKS)
     parser.add_argument("--presets", type=str, nargs="+", default=[None, "safe", "balanced"])
     parser.add_argument("--max-samples", type=int, default=DEFAULT_MAX_SAMPLES)
+    parser.add_argument(
+        "--max-input-tokens",
+        type=int,
+        default=DEFAULT_MAX_INPUT_TOKENS,
+        help="Max input tokens (0 = model's max_position_embeddings, capped at 32768).",
+    )
     parser.add_argument("--out", type=str, default="benchmarks/longbench_results.json")
     args = parser.parse_args()
 
@@ -280,7 +313,9 @@ def main() -> None:
         task_scores = []
         for task in args.tasks:
             print(f"\n  Task: {task}")
-            result = evaluate_task(model, tokenizer, task, preset, args.max_samples)
+            result = evaluate_task(
+                model, tokenizer, task, preset, args.max_samples, args.max_input_tokens
+            )
             task_scores.append(result)
             print(f"  → {result['avg_score']:.1f}")
 
