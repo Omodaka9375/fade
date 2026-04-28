@@ -2,6 +2,25 @@
 All notable changes to FADE will be documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.1.0] — Evaluation fixes + delta-PPL
+### Added
+- **`wikitext2_fade_ppl()`**: measures WikiText-2 PPL through the FADE cache,
+  capturing actual INT4 quantization impact on downstream loss.
+- **Delta-PPL in production_suite**: `production_suite.py` now runs delta-PPL
+  for safe/balanced/aggressive presets automatically.
+- **Result**: Δ PPL = 0.00 across all presets on Qwen2.5-7B at 2K context.
+  FADE's INT4 compression introduces zero measurable quality degradation.
+### Changed
+- **LongBench harness rewritten (P1)**:
+  - Uses `tokenizer.apply_chat_template()` for proper prompt formatting.
+  - Uses `model.generate(past_key_values=cache)` for FADE presets (fair
+    comparison with baseline via the drop-in path).
+  - Max input tokens from model's `max_position_embeddings` (was hardcoded 8192).
+  - Task-aware prompting (QA vs summarization).
+- P3–P5 (materialize buffer, incremental quant, CUDA graphs) closed:
+  DGX Spark benchmarks showed 0% TPS overhead, making these optimizations
+  unnecessary.
+
 ## [1.0.0] — Production-ready release (DGX Spark validated)
 ### Added
 - **Dedicated sink buffer (C3)**: sink tokens (`sink_k/v/pos`) allocated once

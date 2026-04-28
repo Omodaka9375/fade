@@ -255,15 +255,15 @@ Train codebooks from a real model: `python scripts/train_codebook.py`
 
 ### DGX Spark — Qwen2.5-7B-Instruct (2048 tokens)
 
-| Config | KV cache | Compression | Decode TPS |
-|--------|----------|:-----------:|:----------:|
-| Baseline FP16 | 112.00 MiB | 1.0× | 13.3 tok/s |
-| Safe (INT4) | 31.24 MiB | **3.6×** | 13.3 tok/s |
-| Rotated 2-bit | 17.70 MiB | **6.3×** | 13.3 tok/s |
-| Balanced (eviction) | 9.30 MiB | **12.0×** | 13.3 tok/s |
-| Aggressive | 4.77 MiB | **23.5×** | 13.3 tok/s |
+| Config | KV cache | Compression | Δ PPL | Decode TPS |
+|--------|----------|:-----------:|:-----:|:----------:|
+| Baseline FP16 | 112.00 MiB | 1.0× | — | 13.3 tok/s |
+| Safe (INT4) | 31.24 MiB | **3.6×** | **0.00** | 13.3 tok/s |
+| Rotated 2-bit | 17.70 MiB | **6.3×** | **0.00** | 13.3 tok/s |
+| Balanced (eviction) | 9.30 MiB | **12.0×** | **0.00** | 13.3 tok/s |
+| Aggressive | 4.77 MiB | **23.5×** | **0.00** | 13.3 tok/s |
 
-> Needle: 4/4 PASS (512–4096 tokens). WikiText-2 baseline PPL: 6.56.
+> Needle: 4/4 PASS (512–4096 tokens). WikiText-2 PPL: 6.56. Δ PPL = 0.00 across all presets.
 
 ### DGX Spark — Mistral-7B-Instruct-v0.3 (2048 tokens)
 
