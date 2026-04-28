@@ -141,10 +141,14 @@ def wikitext2_fade_ppl(
     cache = create_tiered_cache(model, dtype=dtype, config=config)
     nlls: list[torch.Tensor] = []
     total_tokens = 0
-    chunk_size = 64  # Process corpus in small chunks to trigger reassignment
+    chunk_size = 512  # Larger chunks for speed; reassignment still triggers periodically
+    # Cap eval to avoid OOM on safe (no eviction) and keep runtime reasonable.
+    max_eval_tokens = min(seq_len, 32768)
 
-    for start in tqdm(range(0, seq_len - 1, chunk_size), desc=f"fade-ppl-{preset}", leave=False):
-        end = min(start + chunk_size, seq_len - 1)
+    for start in tqdm(
+        range(0, max_eval_tokens - 1, chunk_size), desc=f"fade-ppl-{preset}", leave=False
+    ):
+        end = min(start + chunk_size, max_eval_tokens - 1)
         chunk = input_ids[:, start : end + 1]  # +1 for the label shift
         chunk_input = chunk[:, :-1]
         chunk_labels = chunk[:, 1:]
