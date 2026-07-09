@@ -79,6 +79,8 @@ def test_to_cache_kwargs_roundtrip():
         "middle_k_bits": c.middle_k_bits,
         "middle_v_bits": c.middle_v_bits,
         "quant_backend": c.quant_backend,
+        "eviction_policy": c.eviction_policy,
+        "reassign_every": c.reassign_every,
     }
 
 

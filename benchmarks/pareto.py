@@ -65,7 +65,14 @@ def main() -> None:
 
     for budget in BUDGETS:
         label = f"budget={budget}" if budget is not None else "unlimited"
-        print(f"\n--- {label} ---")
+        # Map budget to preset name for wikitext2_fade_ppl
+        if budget is None:
+            preset_name = "safe"
+        elif budget <= 100:
+            preset_name = "aggressive"
+        else:
+            preset_name = "balanced"
+        print(f"\n--- {label} (preset={preset_name}) ---")
 
         if budget is not None:
             config = FadeConfig(
@@ -92,25 +99,33 @@ def main() -> None:
         kv_bytes = cache.compressed_storage_bytes()
         kv_mib = kv_bytes / (1024 * 1024)
 
-        # Measure PPL (uses the model directly, not the tiered cache).
-        ppl = base_ppl  # PPL is model-level, not cache-level for non-eviction
-        if budget is not None:
-            # For eviction configs, PPL degrades — approximate by noting
-            # that eviction removes context tokens.
-            kept = 4 + budget + 64  # sinks + budget + recent
-            evict_frac = max(0, 1 - kept / S) if kept < S else 0
-            ppl_estimate = base_ppl * (1 + evict_frac * 0.5)  # rough model
-            ppl = ppl_estimate
+        # Measure actual PPL using the fixed wikitext2_fade_ppl
+        # This triggers real compression and measures actual quality impact
+        from fade.eval.wikitext_ppl import wikitext2_fade_ppl
 
-        ratio = (
+        ppl = wikitext2_fade_ppl(
+            model,
+            tokenizer,
+            preset=preset_name,
+            max_length=PPL_MAX_LENGTH,
+            stride=PPL_STRIDE,
+            device=DEVICE,
+        )
+
+        # Correct baseline: K + V cache with GQA (uses num_key_value_heads)
+        # Each KV head stores: S * hidden_size / num_attention_heads * 2 bytes (fp16)
+        # Total: num_kv_heads * layers * 2 (K+V) * S * head_dim * 2 bytes
+        head_dim = model.config.hidden_size // model.config.num_attention_heads
+        kv_heads = getattr(model.config, "num_key_value_heads", model.config.num_attention_heads)
+        baseline_bytes = (
             S
             * num_layers
-            * 2
-            * 2
-            * model.config.hidden_size
-            // model.config.num_attention_heads
-            * 2
-        ) / max(kv_bytes, 1)
+            * kv_heads
+            * 2  # K + V
+            * head_dim
+            * 2  # fp16 = 2 bytes
+        )
+        ratio = baseline_bytes / max(kv_bytes, 1)
 
         results.append(
             {
@@ -118,12 +133,12 @@ def main() -> None:
                 "tokens": S,
                 "kv_mib": round(kv_mib, 2),
                 "compression": round(ratio, 1),
-                "ppl_estimate": round(ppl, 2),
+                "ppl": round(ppl, 2),
                 "ppl_delta_pct": round((ppl / base_ppl - 1) * 100, 1),
             }
         )
         print(
-            f"  KV: {kv_mib:.2f} MiB, ~{ratio:.1f}x compression, PPL est: {ppl:.2f} ({(ppl / base_ppl - 1) * 100:+.1f}%)"
+            f"  KV: {kv_mib:.2f} MiB, ~{ratio:.1f}x compression, PPL: {ppl:.2f} ({(ppl / base_ppl - 1) * 100:+.1f}%)"
         )
 
     # Summary.
@@ -133,7 +148,7 @@ def main() -> None:
     print(f"{'Budget':>10} {'KV MiB':>8} {'Compress':>10} {'PPL':>8} {'PPL Δ%':>8}")
     for r in results:
         print(
-            f"{r['budget']!s:>10} {r['kv_mib']:>8.2f} {r['compression']:>9.1f}x {r['ppl_estimate']:>8.2f} {r['ppl_delta_pct']:>+7.1f}%"
+            f"{r['budget']!s:>10} {r['kv_mib']:>8.2f} {r['compression']:>9.1f}x {r['ppl']:>8.2f} {r['ppl_delta_pct']:>+7.1f}%"
         )
 
     if args.csv:

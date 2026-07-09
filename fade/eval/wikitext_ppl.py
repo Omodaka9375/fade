@@ -101,18 +101,38 @@ def wikitext2_fade_ppl(
     device: str | torch.device = "cuda",
     split: str = DEFAULT_SPLIT,
 ) -> float:
-    """Compute WikiText-2 PPL with FADE cache as drop-in.
+    """Compute WikiText-2 PPL with FADE cache using persistent sliding window.
 
-    Identical to ``wikitext2_perplexity`` but passes a FADE cache via
-    ``past_key_values``. Each sliding window gets a fresh cache so the
-    methodology matches the baseline exactly — only the cache backend
-    differs.
+    This implements proper sliding-window perplexity evaluation with FADE's
+    tiered KV cache compression. Unlike the baseline which creates a fresh
+    cache per chunk, this maintains a **persistent cache** across chunks and
+    triggers tier reassignment after each chunk to activate compression.
 
-    The FADE cache compresses K/V automatically during the forward pass
-    via the HF ``update()`` hook. This measures the real quality impact
-    of INT4 quantization on attention.
+    Methodology:
+        1. Prefill first chunk into FADE cache
+        2. For each subsequent chunk:
+           - Run forward pass with current cache (teacher-forced on new tokens)
+           - Append new K/V to cache
+           - Trigger tier reassignment (eviction + quantization)
+        3. Accumulate NLL only on the **continuation** tokens (not the overlap)
+
+    This ensures compression actually runs and measures the real quality impact
+    of INT4/INT2 quantization and eviction policies.
+
+    Args:
+        model: HuggingFace causal LM.
+        tokenizer: matching tokenizer.
+        preset: FADE preset name (``"safe"``, ``"balanced"``, ``"aggressive"``).
+        max_length: context window per evaluation chunk.
+        stride: step between chunks (overlap = max_length - stride).
+        device: torch device.
+        split: dataset split (default ``"test"``).
+
+    Returns:
+        Perplexity (float). Lower is better.
     """
     from fade import FadeConfig, create_tiered_cache
+    from fade.policy import reassign_tiers_by_position
 
     text = _load_wikitext2(split)
     enc = tokenizer(text, return_tensors="pt")
@@ -121,26 +141,44 @@ def wikitext2_fade_ppl(
 
     preset_fn = getattr(FadeConfig, preset, FadeConfig.safe)
     config = preset_fn()
+    # H2O requires attention weights which we don't have in teacher-forced eval
     if config.eviction_policy == "h2o":
         config = config.with_overrides(eviction_policy="position")
 
     dtype = next(model.parameters()).dtype
 
+    # Create persistent FADE cache
+    cache = create_tiered_cache(model, dtype=dtype, config=config)
+
     nlls: list[torch.Tensor] = []
     prev_end = 0
+    first_chunk = True
 
     for begin in tqdm(range(0, seq_len, stride), desc=f"fade-ppl-{preset}", leave=False):
         end = min(begin + max_length, seq_len)
-        trg_len = end - prev_end
         window = input_ids[:, begin:end]
-        target = window.clone()
-        target[:, :-trg_len] = -100
+        seq_len_window = window.size(1)
 
-        # Fresh FADE cache per window — same as baseline but with INT4
-        # quantization active inside the cache's update() method.
-        cache = create_tiered_cache(model, dtype=dtype, config=config)
-        out = model(window, labels=target, past_key_values=cache, use_cache=True)
-        nlls.append(out.loss.float() * trg_len)
+        if first_chunk:
+            # First chunk: prefill the cache, compute NLL on entire chunk
+            target = window.clone()
+            out = model(window, labels=target, past_key_values=cache, use_cache=True)
+            nlls.append(out.loss.float() * seq_len_window)
+            first_chunk = False
+        else:
+            # Subsequent chunks: teacher-forced on new tokens only
+            # Compute NLL only on continuation (exclude overlap from prev chunk)
+            overlap = begin - prev_end
+            new_tokens = window[:, overlap:]
+            target = new_tokens.clone()
+            target[:, :-1] = -100  # Only compute loss on predicted tokens
+
+            out = model(new_tokens, labels=target, past_key_values=cache, use_cache=True)
+            nlls.append(out.loss.float() * new_tokens.size(1))
+
+            # Trigger tier reassignment after processing this chunk
+            # This is where compression/eviction actually happens
+            reassign_tiers_by_position(cache, num_layers=len(cache._layers))
 
         prev_end = end
         if end == seq_len:

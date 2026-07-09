@@ -160,3 +160,41 @@ def test_tier_reassignment_pipeline():
     tok = out.logits[:, -1:, :].argmax(dim=-1)
     out2 = forward_with_tracking(model, tok, cache, tracker=tracker)
     assert out2.logits.shape == (1, 1, cfg.vocab_size)
+
+
+def test_wikitext_ppl_uses_persistent_cache_with_reassignment():
+    """Verify wikitext2_fade_ppl uses persistent cache and triggers reassignment.
+
+    This tests the P0-2 fix: the evaluation should use a persistent cache across
+    chunks and trigger tier reassignment after each chunk to activate compression.
+    """
+    pytest.importorskip("datasets")
+    from fade.eval.wikitext_ppl import wikitext2_fade_ppl
+
+    model, tokenizer, cfg = _tiny_model()
+
+    # Use a short text for fast testing
+    text = "The quick brown fox jumps over the lazy dog. " * 20
+
+    # Mock the _load_wikitext2 function to return our test text
+    import fade.eval.wikitext_ppl as ppl_module
+    original_load = ppl_module._load_wikitext2
+    ppl_module._load_wikitext2 = lambda split="test": text
+
+    try:
+        # Run with small window to force multiple chunks
+        ppl = wikitext2_fade_ppl(
+            model,
+            tokenizer,
+            preset="safe",
+            max_length=64,
+            stride=32,
+            device="cpu",
+        )
+        # Verify we got a finite perplexity
+        assert isinstance(ppl, float)
+        assert ppl > 0
+        assert not float("inf") == ppl
+    finally:
+        # Restore original function
+        ppl_module._load_wikitext2 = original_load

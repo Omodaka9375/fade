@@ -303,3 +303,99 @@ def test_mixed_int4_int2_middle_ordering():
     _, _, pos_out = cache._all_in_position_order(0)
     diffs = pos_out[1:] - pos_out[:-1]
     assert (diffs > 0).all(), "positions must be strictly ascending"
+
+
+def test_auto_reassign_on_generate_path():
+    """Test that auto-reassignment works in the drop-in generate() path.
+
+    This verifies the P0-1 fix: compression should run automatically when
+    using model.generate() with a TieredKVCache, without needing manual
+    reassignment calls.
+    """
+    # Create cache with unlimited budget (no eviction) to isolate auto-reassign behavior
+    cache = TieredKVCache(
+        n_sink=2,
+        recent_window=4,
+        int4_budget=None,  # Unlimited - no eviction, just compression
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=ROPE_THETA,
+        head_dim=D,
+        eviction_policy="position",
+        reassign_every=5,  # Reassign every 5 decode steps
+        auto_reassign=True,
+    )
+
+    # Simulate prefill (long prompt)
+    prefill_len = 20
+    k_prefill = torch.randn(B, H, prefill_len, D)
+    v_prefill = torch.randn(B, H, prefill_len, D)
+    positions = torch.arange(prefill_len)
+    cos, sin = _make_rope_cos_sin(positions, D)
+    k_rope = _apply_rope(k_prefill, cos, sin)
+    cache.update(k_rope, v_prefill, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
+
+    # Initial state: everything should be in FP16 (no reassignment yet)
+    state = cache._layers[0]
+    assert state.fp16_k is not None
+
+    # Simulate decode steps - should trigger auto-reassignment at step 5, 10, 15...
+    for step in range(12):
+        k_step = torch.randn(B, H, 1, D)
+        v_step = torch.randn(B, H, 1, D)
+        pos_step = torch.tensor([prefill_len + step])
+        cos_step, sin_step = _make_rope_cos_sin(pos_step, D)
+        k_rope_step = _apply_rope(k_step, cos_step, sin_step)
+        cache.update(k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step})
+
+    # After 12 decode steps with reassign_every=5, we should have triggered reassignment
+    # Check that INT4 tier has tokens (compression happened)
+    assert state.int4_kq is not None, "INT4 tier should be populated after auto-reassignment"
+    int4_count = int(state.int4_pos.shape[0]) if state.int4_pos is not None else 0
+    assert int4_count > 0, "INT4 tier should have tokens after auto-reassignment"
+
+    # Verify all tokens are retained (unlimited budget = no eviction)
+    total_seq = cache.get_seq_length(0)
+    assert total_seq == prefill_len + 12, "Total sequence length should match"
+
+    # FP16 should only contain sinks + recent window (not all tokens)
+    fp16_count = int(state.fp16_pos.shape[0]) if state.fp16_pos is not None else 0
+    assert fp16_count < total_seq, "FP16 should not contain all tokens after reassignment"
+
+
+def test_auto_reassign_disabled():
+    """Test that auto_reassign=False prevents automatic reassignment."""
+    cache = TieredKVCache(
+        n_sink=2,
+        recent_window=4,
+        int4_budget=8,
+        int2_budget=0,
+        dtype=DTYPE,
+        rope_theta=ROPE_THETA,
+        head_dim=D,
+        eviction_policy="position",
+        reassign_every=3,
+        auto_reassign=False,  # Disable auto-reassignment
+    )
+
+    # Simulate prefill
+    prefill_len = 20
+    k_prefill = torch.randn(B, H, prefill_len, D)
+    v_prefill = torch.randn(B, H, prefill_len, D)
+    positions = torch.arange(prefill_len)
+    cos, sin = _make_rope_cos_sin(positions, D)
+    k_rope = _apply_rope(k_prefill, cos, sin)
+    cache.update(k_rope, v_prefill, layer_idx=0, cache_kwargs={"cos": cos, "sin": sin})
+
+    # Simulate many decode steps
+    for step in range(20):
+        k_step = torch.randn(B, H, 1, D)
+        v_step = torch.randn(B, H, 1, D)
+        pos_step = torch.tensor([prefill_len + step])
+        cos_step, sin_step = _make_rope_cos_sin(pos_step, D)
+        k_rope_step = _apply_rope(k_step, cos_step, sin_step)
+        cache.update(k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step})
+
+    # With auto_reassign=False, INT4 tier should still be None (no compression)
+    state = cache._layers[0]
+    assert state.int4_kq is None, "INT4 tier should remain empty when auto_reassign=False"

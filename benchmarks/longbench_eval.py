@@ -47,7 +47,7 @@ DEFAULT_TASKS: list[str] = [
 DEFAULT_MAX_SAMPLES: int = 50
 DEFAULT_MAX_NEW_TOKENS: int = 128
 DEFAULT_MAX_INPUT_TOKENS: int = 0  # 0 = use model's max_position_embeddings
-REASSIGN_EVERY: int = 64
+# REASSIGN_EVERY removed: P0-1 auto-reassign handles this internally
 
 
 # --- scoring ---------------------------------------------------------------- #
@@ -218,7 +218,8 @@ def generate_with_fade(
     generation path is identical to baseline (fair comparison).
     """
     max_len = max_input_tokens if max_input_tokens > 0 else _get_max_input_tokens(model)
-    enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_len).to(DEVICE)
+    # Do NOT truncate - let the cache handle long context via auto-reassign (P0-1)
+    enc = tokenizer(prompt, return_tensors="pt").to(DEVICE)
 
     if preset is None:
         # Baseline: plain model.generate().

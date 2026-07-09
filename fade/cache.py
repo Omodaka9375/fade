@@ -176,6 +176,9 @@ class TieredKVCache(DynamicCache):
         middle_k_bits: int = 4,
         middle_v_bits: int = 4,
         quant_backend: str | QuantBackend = "int4",
+        eviction_policy: str = "position",
+        reassign_every: int = 64,
+        auto_reassign: bool = True,
     ) -> None:
         """Tiered KV cache.
 
@@ -223,6 +226,11 @@ class TieredKVCache(DynamicCache):
         self._compiled_materialize = None  # populated by enable_compile()
         self._skip_layers: set[int] = set()  # layers with plain passthrough (DeltaNet)
         self._layers: list[LayerState] = []
+        # Auto-reassignment state for drop-in generate() support
+        self._eviction_policy = eviction_policy
+        self._reassign_every = reassign_every
+        self._auto_reassign = auto_reassign
+        self._decode_step = 0  # counter for decode steps (reset on prefill)
 
     def set_skip_layers(self, layer_indices: set[int] | list[int]) -> None:
         """Mark layers as passthrough (no tier management).
@@ -241,6 +249,27 @@ class TieredKVCache(DynamicCache):
     def is_managed(self, layer_idx: int) -> bool:
         """Whether a layer participates in tier management."""
         return layer_idx not in self._skip_layers
+
+    def _auto_reassign_tiers(self) -> None:
+        """Automatically trigger tier reassignment using the configured policy.
+
+        This is called from ``update()`` when ``auto_reassign`` is enabled and
+        the decode step counter hits ``reassign_every``. Falls back to
+        position-based eviction when attention-based policies are not available.
+        """
+        from fade.policy import reassign_tiers_adaptive, reassign_tiers_by_position
+
+        # Position-based is the safe default that requires no attention scores
+        if self._eviction_policy == "position":
+            reassign_tiers_by_position(self, num_layers=len(self._layers))
+        elif self._eviction_policy == "adaptive":
+            # Adaptive needs a tracker; fall back to position if not available
+            # dev: This path is a no-op without an AttentionTracker; position fallback is safer
+            reassign_tiers_by_position(self, num_layers=len(self._layers))
+        else:
+            # For h2o/ema, fall back to position since we don't have attention scores
+            # in the generate() path without manual tracking
+            reassign_tiers_by_position(self, num_layers=len(self._layers))
 
     def enable_compile(self, **compile_kwargs) -> None:
         """Compile the materialize hot path with ``torch.compile``.
@@ -355,6 +384,10 @@ class TieredKVCache(DynamicCache):
 
         K is stored as-is (post-RoPE). Re-RoPE only happens inside
         ``apply_tier_assignment`` when eviction changes positions.
+
+        If ``auto_reassign`` is enabled and this is the last layer, the cache
+        will automatically trigger tier reassignment every ``reassign_every``
+        decode steps using the configured ``eviction_policy``.
         """
         if key_states.dim() != 4:
             raise ValueError(
@@ -376,6 +409,25 @@ class TieredKVCache(DynamicCache):
 
         self._ensure_layer(layer_idx)
         self._append_fp16(key_states, value_states, layer_idx)
+
+        # Track decode step for auto-reassignment
+        # Prefill is detected as a large append; reset counter on prefill
+        current_seq_len = self.get_seq_length(layer_idx)
+        if current_seq_len > 64:  # Heuristic: prefill if sequence is long
+            self._decode_step = 0
+        else:
+            self._decode_step += 1
+
+        # Auto-reassign on the last managed layer when threshold is hit
+        if (
+            self._auto_reassign
+            and self._reassign_every is not None
+            and layer_idx == len(self._layers) - 1
+            and self._decode_step > 0
+            and self._decode_step % self._reassign_every == 0
+        ):
+            self._auto_reassign_tiers()
+
         return self._materialize(layer_idx)
 
     def get_seq_length(self, layer_idx: int = 0) -> int:

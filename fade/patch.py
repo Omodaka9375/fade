@@ -169,6 +169,9 @@ def create_tiered_cache(
     cache_kwargs: dict = {}
     if config is not None:
         cache_kwargs.update(config.to_cache_kwargs())
+        # Pass auto-reassignment config from FadeConfig
+        cache_kwargs.setdefault("eviction_policy", config.eviction_policy)
+        cache_kwargs.setdefault("reassign_every", config.reassign_every)
     cache_kwargs.update(kwargs)
     cache = TieredKVCache(
         dtype=dtype,

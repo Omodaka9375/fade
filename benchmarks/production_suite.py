@@ -96,8 +96,46 @@ def _make_cache(model, preset_dict: dict, head_dim: int):
 
 
 @torch.no_grad()
+def measure_fp16_baseline_bytes(model, tokenizer, target_tokens: int) -> int:
+    """Measure FP16 baseline KV cache bytes from actual DynamicCache.
+
+    This provides a real measurement instead of an analytical formula,
+    ensuring the compression ratio is computed from the same execution
+    paradigm as the compressed cache measurements.
+    """
+    cfg = getattr(model, "config", None)
+    text_cfg = getattr(cfg, "text_config", cfg)
+    num_layers = text_cfg.num_hidden_layers
+    head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
+    num_kv_heads = getattr(text_cfg, "num_key_value_heads", text_cfg.num_attention_heads)
+
+    input_ids = _make_filler(tokenizer, target_tokens)
+    S = input_ids.shape[1]
+
+    # Use actual DynamicCache to measure baseline
+    baseline_cache = DynamicCache()
+    model(input_ids, past_key_values=baseline_cache, use_cache=True)
+
+    # Measure actual bytes from the cache
+    # For DynamicCache, each layer has K and V tensors of shape [B, H, S, D]
+    total_bytes = 0
+    for i in range(num_layers):
+        k = baseline_cache.key_cache[i]
+        v = baseline_cache.value_cache[i]
+        if k is not None and v is not None:
+            total_bytes += k.element_size() * k.numel()
+            total_bytes += v.element_size() * v.numel()
+
+    return total_bytes
+
+
+@torch.no_grad()
 def measure_kv_bytes(model, tokenizer, preset_dict: dict, target_tokens: int) -> dict:
-    """Prefill + reassign, return KV bytes and compression ratio."""
+    """Prefill with auto-reassignment, return KV bytes and compression ratio.
+
+    This measures compression using the same auto-reassign path that quality
+    eval uses (P0-1), ensuring consistency between compression and quality metrics.
+    """
     cfg = getattr(model, "config", None)
     text_cfg = getattr(cfg, "text_config", cfg)
     head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
@@ -109,17 +147,18 @@ def measure_kv_bytes(model, tokenizer, preset_dict: dict, target_tokens: int) ->
     cache = _make_cache(model, preset_dict, head_dim)
 
     if preset_dict["preset"] is None:
+        # Baseline: measure actual FP16 bytes from DynamicCache
         model(input_ids, past_key_values=cache, use_cache=True)
+        kv_bytes = cache_storage_bytes(cache)
     else:
+        # FADE: use auto-reassign (P0-1) - no forced reassignment
+        # The cache will auto-reassign during the forward pass
         tracker = AttentionTracker(num_layers=num_layers)
         forward_with_tracking(model, input_ids, cache, tracker=tracker)
-        reassign_tiers_by_position(cache, num_layers)
+        kv_bytes = cache_storage_bytes(cache)
 
-    kv_bytes = cache_storage_bytes(cache)
-
-    # Compute FP16 baseline bytes for ratio.
-    num_kv_heads = getattr(text_cfg, "num_key_value_heads", text_cfg.num_attention_heads)
-    fp16_bytes = 2 * num_layers * num_kv_heads * head_dim * S * 2  # K+V, 2 bytes each
+    # Measure FP16 baseline from actual DynamicCache (same execution paradigm)
+    fp16_bytes = measure_fp16_baseline_bytes(model, tokenizer, target_tokens)
     ratio = fp16_bytes / max(kv_bytes, 1)
 
     return {

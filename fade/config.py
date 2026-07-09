@@ -154,6 +154,8 @@ class FadeConfig:
             "middle_k_bits": self.middle_k_bits,
             "middle_v_bits": self.middle_v_bits,
             "quant_backend": self.quant_backend,
+            "eviction_policy": self.eviction_policy,
+            "reassign_every": self.reassign_every,
         }
 
 
