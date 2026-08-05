@@ -52,3 +52,6 @@ snapshot*.json
 
 # Pre-commit
 .pre-commit-cache/
+
+# Local notes / scratch
+Fade-SocMedi-Posts.txt

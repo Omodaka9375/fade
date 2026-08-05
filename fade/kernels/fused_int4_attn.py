@@ -134,9 +134,11 @@ if _HAS_TRITON:
             offs_n = start_n + tl.arange(0, BLOCK_N)
             mask_n = offs_n < N_CTX_K
 
-            # Causal: skip entire block if all keys are after all queries.
-            if IS_CAUSAL and start_n > (pid_m + 1) * BLOCK_M - 1:
-                continue
+            # Note: block-level causal early-exit via `continue` is not supported
+            # in Triton's JIT compiler (unsupported AST node: Continue).
+            # Correctness is handled by the per-element causal mask below
+            # (offs_m[:, None] >= offs_n[None, :]), which sets fully-future
+            # blocks to -inf so they contribute zero after softmax.
 
             # --- Unpack K tile [BLOCK_N, BLOCK_D_HALF] uint8 ---
             kp_ptrs = (

@@ -114,7 +114,10 @@ def test_dequant_age_eviction():
     rebuilt periodically via _get_int4_dequant. We verify the age counter
     resets after exceeding the threshold.
     """
-    cache = _make_cache()
+    # This test exercises the dequant-cache eviction path, which only runs
+    # when the dequant cache is populated (cache_dequant=True). The global
+    # default is False (honest memory accounting); opt in explicitly here.
+    cache = _make_cache(cache_dequant=True)
     cache.max_dequant_age = 3
 
     k = torch.randn(B, H, 8, D)

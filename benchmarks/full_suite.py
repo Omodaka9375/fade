@@ -91,15 +91,48 @@ def main() -> None:
 
     # --- Needle tests ---
     print("\n=== Needle-in-a-Haystack ===")
+
+    # First, test baseline (no compression)
+    print("\n  Baseline (uncompressed):")
     for depth in NEEDLE_DEPTHS:
-        print(f"  Depth {depth}...", end=" ", flush=True)
+        print(f"    Depth {depth}...", end=" ", flush=True)
         try:
             r = run_needle(model, tokenizer, target_tokens=depth, device=DEVICE)
             print(f"{'PASS' if r['passed'] else 'FAIL'} (answer: {r['answer'][:50]})")
         except Exception as e:
             r = {"passed": False, "error": str(e)}
             print(f"ERROR: {e}")
-        results.setdefault("needle", {})[str(depth)] = r
+        results.setdefault("needle_baseline", {})[str(depth)] = r
+
+    # Then test with each FADE config
+    print("\n  With FADE compression:")
+    for cfg in CONFIGS:
+        if cfg["preset"] is None:
+            continue  # Skip baseline, already tested above
+
+        print(f"\n    Config: {cfg['name']}")
+        preset_fn = getattr(FadeConfig, cfg["preset"])
+        config = preset_fn()
+        if config.eviction_policy == "h2o":
+            config = config.with_overrides(eviction_policy="position")
+
+        kwargs = {}
+        if cfg.get("backend") == "rotated_2bit":
+            from fade.backends import get_backend
+            head_dim = model.config.hidden_size // model.config.num_attention_heads
+            kwargs["quant_backend"] = get_backend("rotated", head_dim=head_dim, bits=2)
+
+        cache_factory = lambda c=config, kw=kwargs: create_tiered_cache(model, dtype=DTYPE, config=c, **kw)
+
+        for depth in NEEDLE_DEPTHS:
+            print(f"      Depth {depth}...", end=" ", flush=True)
+            try:
+                r = run_needle(model, tokenizer, target_tokens=depth, device=DEVICE, cache_factory=cache_factory)
+                print(f"{'PASS' if r['passed'] else 'FAIL'} (answer: {r['answer'][:50]})")
+            except Exception as e:
+                r = {"passed": False, "error": str(e)}
+                print(f"ERROR: {e}")
+            results.setdefault("needle_by_config", {}).setdefault(cfg["name"], {})[str(depth)] = r
 
     # --- Perplexity ---
     print("\n=== Perplexity ===")

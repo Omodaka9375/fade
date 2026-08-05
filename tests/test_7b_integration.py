@@ -112,9 +112,15 @@ def test_compression_below_baseline(model_and_tokenizer, preset):
 
 
 def test_needle_pass(model_and_tokenizer):
-    """Needle-in-a-haystack must PASS at 2048 tokens."""
+    """Needle-in-a-haystack must PASS at 2048 tokens with FADE compression."""
     model, tokenizer = model_and_tokenizer
+    from fade import FadeConfig, create_tiered_cache
     from fade.eval.needle import run_needle
 
-    result = run_needle(model, tokenizer, target_tokens=2048, device=DEVICE)
-    assert result["passed"], f"Needle FAIL: {result['answer']}"
+    # Create a FADE cache with balanced config
+    config = FadeConfig.balanced()
+    config = config.with_overrides(eviction_policy="position")  # H2O needs attention, use position for test
+    cache_factory = lambda: create_tiered_cache(model, config=config)
+
+    result = run_needle(model, tokenizer, target_tokens=2048, device=DEVICE, cache_factory=cache_factory)
+    assert result["passed"], f"Needle FAIL with FADE cache: {result['answer']}"

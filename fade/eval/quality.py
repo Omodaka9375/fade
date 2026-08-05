@@ -7,11 +7,14 @@ Example:
     from fade.eval.quality import run_quality_suite
     results = run_quality_suite(model, tokenizer, device="cuda")
     assert results["needle"]["passed"]
+
+Can optionally test with a custom cache (e.g., FADE's TieredKVCache) to verify
+quality under compression.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import torch
 
@@ -43,8 +46,24 @@ def run_quality_suite(
     ppl_threshold: float = DEFAULT_PPL_THRESHOLD,
     run_ppl: bool = True,
     run_needle: bool = True,
+    cache_factory: Callable | None = None,
 ) -> dict[str, Any]:
     """Run the quality suite and return a results dict.
+
+    Args:
+        model: HuggingFace causal LM.
+        tokenizer: matching tokenizer.
+        device: torch device.
+        needle_target_tokens: target length for needle test.
+        ppl_text: text for perplexity evaluation.
+        ppl_max_length: max length for PPL sliding window.
+        ppl_stride: stride for PPL sliding window.
+        ppl_threshold: PPL threshold for pass/fail.
+        run_ppl: whether to run perplexity test.
+        run_needle: whether to run needle test.
+        cache_factory: optional callable that returns a cache object for
+            the needle test. If provided, tests model quality under
+            compression. If None, uses default HF DynamicCache.
 
     Returns:
         ``{"needle": {..., "passed": bool}, "perplexity": {..., "passed": bool},
@@ -58,6 +77,7 @@ def run_quality_suite(
             tokenizer,
             device=device,
             target_tokens=needle_target_tokens,
+            cache_factory=cache_factory,
         )
         results["needle"] = needle_result
 
@@ -83,9 +103,22 @@ def run_needle_test(
     tokenizer,
     device="cuda",
     target_tokens=DEFAULT_NEEDLE_TARGET_TOKENS,
+    cache_factory: Callable | None = None,
 ) -> dict:
-    """Run needle-in-a-haystack and return result dict."""
-    result = run_needle(model, tokenizer, target_tokens=target_tokens, device=device)
+    """Run needle-in-a-haystack and return result dict.
+
+    Args:
+        model: HuggingFace causal LM.
+        tokenizer: matching tokenizer.
+        device: torch device.
+        target_tokens: target length for needle test.
+        cache_factory: optional callable that returns a cache object.
+            If provided, the model uses this cache for generation.
+
+    Returns:
+        Dict with keys ``prompt_tokens``, ``answer``, and ``passed``.
+    """
+    result = run_needle(model, tokenizer, target_tokens=target_tokens, device=device, cache_factory=cache_factory)
     return result
 
 

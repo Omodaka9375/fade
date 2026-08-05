@@ -20,11 +20,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 import torch
 from transformers import DynamicCache
+
+# benchmarks/ is a scripts directory, not an installed package — add it to
+# sys.path so sibling modules like unified_eval can be imported directly.
+sys.path.insert(0, str(Path(__file__).parent))
+from unified_eval import evaluate_config, evaluate_preset_grid, print_unified_results  # noqa: E402
 
 from fade import FadeConfig, create_tiered_cache
 from fade.backends import get_backend
@@ -222,7 +228,7 @@ def run_wikitext2_ppl(model, tokenizer) -> float | None:
 
 # --- main ------------------------------------------------------------------- #
 def benchmark_model(model_id: str, skip_ppl: bool = False) -> dict:
-    """Run full benchmark suite for one model."""
+    """Run full benchmark suite for one model using unified evaluation."""
     print(f"\n{'=' * 70}")
     print(f"  Model: {model_id}")
     print(f"{'=' * 70}")
@@ -240,95 +246,72 @@ def benchmark_model(model_id: str, skip_ppl: bool = False) -> dict:
         "num_kv_heads": getattr(text_cfg, "num_key_value_heads", text_cfg.num_attention_heads),
     }
 
-    # --- WikiText-2 PPL ---
-    if not skip_ppl:
-        print("\n--- WikiText-2 Perplexity ---")
+    # --- Unified Evaluation: Compression + Quality from SAME run ---
+    print("\n--- Unified Evaluation (Compression + Quality from Same Run) ---")
+
+    if skip_ppl:
+        print("  [SKIP] PPL evaluation disabled")
+        unified_results = []
+        for preset_name in ["safe", "balanced", "aggressive"]:
+            r = evaluate_config(
+                model, tokenizer, preset=preset_name,
+                target_tokens=2048,
+                eval_ppl=False,
+                eval_needle=False,
+                device=DEVICE
+            )
+            unified_results.append(r)
+            print(f"  {preset_name}: {r['compression']:.1f}x compression, "
+                  f"KV: {r['kv_mib']:.1f} MiB, Peak: {r['peak_memory_mib']:.1f} MiB")
+    else:
+        # Get baseline PPL first
+        print("\n  Computing baseline FP16 PPL...")
         baseline_ppl = run_wikitext2_ppl(model, tokenizer)
         result["wikitext2_ppl"] = baseline_ppl
-        if baseline_ppl is not None:
+        if baseline_ppl:
             print(f"  Baseline FP16 PPL: {baseline_ppl}")
 
-        # Delta-PPL per FADE preset (P2).
-        delta_ppl_results = []
+        # Unified evaluation for each preset
+        unified_results = []
         for preset_name in ["safe", "balanced", "aggressive"]:
             print(f"  {preset_name}...", end=" ", flush=True)
             try:
-                from fade.eval.wikitext_ppl import wikitext2_fade_ppl
-
-                ppl = round(
-                    wikitext2_fade_ppl(model, tokenizer, preset=preset_name, device=DEVICE), 4
+                r = evaluate_config(
+                    model, tokenizer, preset=preset_name,
+                    target_tokens=2048,
+                    eval_ppl=True,
+                    eval_needle=False,
+                    device=DEVICE
                 )
-                delta = round(ppl - baseline_ppl, 4) if baseline_ppl else 0
-                delta_pct = round((delta / baseline_ppl) * 100, 2) if baseline_ppl else 0
-                print(f"PPL {ppl} (delta {delta:+.4f}, {delta_pct:+.2f}%)")
-                delta_ppl_results.append(
-                    {"preset": preset_name, "ppl": ppl, "delta": delta, "delta_pct": delta_pct}
-                )
+                unified_results.append(r)
+                print(f"Compression: {r['compression']:.1f}x, "
+                      f"PPL: {r['ppl']:.2f} ({r['ppl_delta_pct']:+.1f}%), "
+                      f"KV: {r['kv_mib']:.1f} MiB")
             except Exception as e:
                 print(f"ERROR: {e}")
-                delta_ppl_results.append({"preset": preset_name, "error": str(e)})
-        result["delta_ppl"] = delta_ppl_results
-    else:
-        result["wikitext2_ppl"] = None
-        result["delta_ppl"] = None
-        print("\n--- WikiText-2 PPL skipped ---")
+                unified_results.append({"preset": preset_name, "error": str(e)})
 
-    # --- Needle ---
-    print("\n--- Needle-in-a-Haystack ---")
-    needle_results = {}
-    for depth in NEEDLE_DEPTHS:
-        print(f"  Depth {depth}...", end=" ", flush=True)
-        try:
-            r = run_needle(model, tokenizer, target_tokens=depth, device=DEVICE)
-            status = "PASS" if r["passed"] else "FAIL"
-            print(f"{status} ({r['answer'][:60]})")
-            needle_results[str(depth)] = r
-        except Exception as e:
-            print(f"ERROR: {e}")
-            needle_results[str(depth)] = {"passed": False, "error": str(e)}
-    result["needle"] = needle_results
+        result["unified_eval"] = unified_results
 
-    # --- KV memory + compression ---
-    print("\n--- KV Compression ---")
-    compression_results = []
-    for preset in PRESETS:
-        for target_len in KV_MEASURE_LENGTHS:
-            print(f"  {preset['name']:20s} @ {target_len} tokens...", end=" ", flush=True)
-            try:
-                kv = measure_kv_bytes(model, tokenizer, preset, target_len)
-                print(f"{kv['kv_mib']:.2f} MiB ({kv['compression']:.1f}x)")
-                compression_results.append({"preset": preset["name"], **kv})
-            except Exception as e:
-                print(f"ERROR: {e}")
-                compression_results.append(
-                    {"preset": preset["name"], "tokens": target_len, "error": str(e)}
-                )
-    result["compression"] = compression_results
-
-    # --- Decode TPS ---
+    # --- TPS (separate measurement) ---
     print("\n--- Decode TPS ---")
-    tps_results = []
-    for preset in PRESETS:
-        print(f"  {preset['name']:20s}...", end=" ", flush=True)
-        try:
-            tps = measure_tps(model, tokenizer, preset)
-            print(f"{tps['tps']:.1f} tok/s")
-            tps_results.append({"preset": preset["name"], **tps})
-        except Exception as e:
-            print(f"ERROR: {e}")
-            tps_results.append({"preset": preset["name"], "error": str(e)})
-    result["tps"] = tps_results
-
-    # Cleanup.
-    del model, tokenizer
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    tps_result = measure_tps(model, tokenizer, {"preset": "balanced"})
+    result["tps"] = tps_result
+    print(f"  Baseline TPS: {tps_result['tps']:.1f} tok/s")
 
     return result
 
 
 def print_markdown_summary(all_results: list[dict]) -> str:
-    """Generate a markdown table summarizing all results."""
+    """Generate a markdown table summarizing all results.
+
+    Matches the result structure produced by the current benchmark_model():
+        result["unified_eval"]  — list of per-preset dicts with keys:
+                                  preset, compression, kv_mib, fp16_mib,
+                                  ppl (optional), ppl_delta_pct (optional)
+        result["tps"]           — single dict with key "tps" (balanced preset)
+        result["wikitext2_ppl"] — float baseline PPL (optional)
+    """
     lines = [
         "",
         "## Production Benchmark Summary",
@@ -336,39 +319,51 @@ def print_markdown_summary(all_results: list[dict]) -> str:
     ]
 
     for res in all_results:
-        model = res["model"].split("/")[-1]
-        lines.append(f"### {model}")
+        if "error" in res:
+            lines.append(f"### {res.get('model', '?')} — ERROR: {res['error']}")
+            lines.append("")
+            continue
+
+        model_name = res["model"].split("/")[-1]
+        lines.append(f"### {model_name}")
         lines.append("")
 
-        # Compression table (2048 tokens).
-        lines.append("| Config | KV Cache | Compression | Decode TPS |")
-        lines.append("|--------|----------|:-----------:|:----------:|")
+        # Unified evaluation table (compression + quality from same run).
+        unified = res.get("unified_eval", [])
+        if unified:
+            lines.append("| Config | KV Cache | Compression | PPL Δ |")
+            lines.append("|--------|----------|:-----------:|:-----:|")
+            for r in unified:
+                if "error" in r:
+                    lines.append(f"| {r.get('preset', '?')} | ERROR | — | — |")
+                    continue
+                kv   = f"{r['kv_mib']:.2f} MiB"
+                comp = f"**{r['compression']:.1f}×**"
+                delta = f"{r['ppl_delta_pct']:+.1f}%" if "ppl_delta_pct" in r else "—"
+                lines.append(f"| {r['preset']} | {kv} | {comp} | {delta} |")
+        else:
+            lines.append("_No unified evaluation data._")
 
-        comp_2k = {c["preset"]: c for c in res.get("compression", []) if c.get("tokens") == 2048}
-        tps_map = {t["preset"]: t for t in res.get("tps", [])}
-
-        for preset in PRESETS:
-            name = preset["name"]
-            c = comp_2k.get(name, {})
-            t = tps_map.get(name, {})
-            kv = f"{c.get('kv_mib', '?')} MiB" if "kv_mib" in c else "?"
-            comp = f"**{c['compression']}x**" if "compression" in c else "?"
-            tps = f"{t['tps']}" if "tps" in t else "?"
-            lines.append(f"| {name} | {kv} | {comp} | {tps} tok/s |")
-
-        # Needle results.
         lines.append("")
-        needle = res.get("needle", {})
-        if needle:
-            needle_str = ", ".join(
-                f"@{d}: {'✅' if n.get('passed') else '❌'}" for d, n in needle.items()
-            )
-            lines.append(f"Needle: {needle_str}")
 
-        # PPL.
+        # TPS (single balanced-preset measurement).
+        tps_data = res.get("tps", {})
+        if isinstance(tps_data, dict) and "tps" in tps_data:
+            lines.append(f"**Decode TPS (balanced):** {tps_data['tps']:.1f} tok/s")
+
+        # Baseline PPL.
         ppl = res.get("wikitext2_ppl")
         if ppl is not None:
-            lines.append(f"WikiText-2 PPL (baseline FP16): {ppl}")
+            lines.append(f"**WikiText-2 PPL (baseline FP16):** {ppl}")
+
+        # Needle results (baseline).
+        needle = res.get("needle_baseline", res.get("needle", {}))
+        if needle:
+            needle_str = ", ".join(
+                f"@{d}: {'✅' if n.get('passed') else '❌'}"
+                for d, n in sorted(needle.items(), key=lambda x: int(x[0]))
+            )
+            lines.append(f"**Needle (baseline):** {needle_str}")
 
         lines.append("")
 

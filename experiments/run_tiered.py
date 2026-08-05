@@ -27,14 +27,21 @@ from transformers import DynamicCache
 from fade.eval.memory import PeakMemory, cache_storage_bytes
 from fade.eval.needle import run_needle
 from fade.eval.perplexity import perplexity
+from fade.kernels.attention import FusedAttention
 from fade.patch import create_tiered_cache, forward_with_tracking, load_model
 from fade.policy import reassign_tiers, reassign_tiers_by_position, reassign_tiers_h2o
+from fade.quant import quant_k_int4, quant_v_int4
 from fade.tracker import AttentionTracker
 
 # --- configuration (all knobs at the top) ------------------------------------ #
 MODEL_ID: str = "Qwen/Qwen2.5-3B-Instruct"  # swap to 0.5B/1.5B if OOM
 DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
 DTYPE: torch.dtype = torch.float16 if DEVICE == "cuda" else torch.float32
+
+# --- fused attention -------------------------------------------------------- #
+# Use fused INT4 attention kernel (requires Triton + CUDA)
+# This is Option B from the audit - manual integration in decode loop
+USE_FUSED_ATTENTION: bool = False  # Set to True to enable fused kernel
 
 # --- prompt ------------------------------------------------------------------ #
 # "diverse"      = distinct paragraphs on varied topics (summarization)
@@ -235,8 +242,24 @@ def greedy_generate(
     num_layers: int = 0,
     use_tiered_policy: bool = False,
     eviction_policy: str = "h2o",
+    use_fused_attention: bool = False,
 ) -> torch.Tensor:
-    """Greedy decode one token at a time. Returns [1, generated_len] token ids."""
+    """Greedy decode one token at a time. Returns [1, generated_len] token ids.
+
+    Args:
+        model: HuggingFace causal LM.
+        tokenizer: matching tokenizer.
+        input_ids: input token ids.
+        past_key_values: cache for KV states.
+        max_new_tokens: maximum tokens to generate.
+        tracker: attention tracker for H2O/EMA policies.
+        reassign_every: reassign tiers every N decode steps.
+        num_layers: number of model layers.
+        use_tiered_policy: whether to use FADE tier management.
+        eviction_policy: "h2o", "ema", or "position".
+        use_fused_attention: if True, attempt to use fused INT4 kernel
+            (currently a no-op - requires deeper model integration).
+    """
     prefill_len = int(input_ids.shape[-1])
     need_prefill_attn = (
         use_tiered_policy and eviction_policy == "h2o" and prefill_len <= PREFILL_TRACK_LIMIT
@@ -257,7 +280,20 @@ def greedy_generate(
     next_token = out.logits[:, -1:, :].argmax(dim=-1)
     generated: list[torch.Tensor] = [next_token]
 
+    # Initialize fused attention if enabled
+    fused_attn = FusedAttention(force_fused=True) if (use_fused_attention and USE_FUSED_ATTENTION) else None
+
     for step in range(max_new_tokens - 1):
+        # TODO: Fused attention integration point
+        # To use fused INT4 kernel here, you would need to:
+        # 1. Intercept Q, K, V from the attention layer
+        # 2. Quantize K, V to INT4 using quant_k_int4() / quant_v_int4()
+        # 3. Call fused_attn(q, k_packed, k_scale, v_packed, v_scale)
+        # 4. Use the result for logits computation
+        #
+        # This requires model-specific attention layer patching.
+        # See fade/patch_fused.py for a skeleton implementation.
+
         out = forward_with_tracking(model, next_token, past_key_values, tracker=tracker)
         next_token = out.logits[:, -1:, :].argmax(dim=-1)
         generated.append(next_token)
@@ -364,13 +400,16 @@ def main() -> None:
             num_layers=num_layers,
             use_tiered_policy=True,
             eviction_policy=EVICTION_POLICY,
+            use_fused_attention=USE_FUSED_ATTENTION,
         )
         t_tier = time.perf_counter() - t0
     tier_cache_mib = cache_storage_bytes(tiered_cache) / (1024 * 1024)
+
+    fused_status = " (fused INT4)" if USE_FUSED_ATTENTION else ""
     print(
         f"generated={tiered_out.shape[1]}  elapsed={t_tier:.2f}s  "
         f"peak={mem_tier.peak_mib:.1f} MiB  "
-        f"tps={tiered_out.shape[1] / t_tier:.2f}  "
+        f"tps={tiered_out.shape[1] / t_tier:.2f}{fused_status}  "
         f"kv_cache={tier_cache_mib:.1f} MiB"
     )
     print(tokenizer.decode(tiered_out[0], skip_special_tokens=True))
@@ -420,11 +459,31 @@ def main() -> None:
     # --------------------------- NEEDLE ------------------------------ #
     if RUN_NEEDLE:
         print("\n=== NEEDLE-IN-A-HAYSTACK ===")
+        # Create a cache factory that uses the same config as the tiered run
+        if use_tiered_policy:
+            from fade import FadeConfig
+            from fade.patch import create_tiered_cache
+
+            config = FadeConfig(
+                phase="2" if PHASE == "2" else "1a",
+                n_sink=N_SINK,
+                recent_window=RECENT_WINDOW,
+                int4_budget=INT4_BUDGET if PHASE == "2" else None,
+                int2_budget=INT2_BUDGET,
+                eviction_policy=EVICTION_POLICY,
+            )
+            cache_factory = lambda: create_tiered_cache(model, dtype=DTYPE, config=config)
+            print(f"Testing with FADE cache: {config.phase}, {config.eviction_policy}")
+        else:
+            cache_factory = None
+            print("Testing with baseline (uncompressed) cache")
+
         result = run_needle(
             model,
             tokenizer,
             target_tokens=NEEDLE_TARGET_TOKENS,
             device=DEVICE,
+            cache_factory=cache_factory,
         )
         print(result)
 

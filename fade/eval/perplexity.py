@@ -7,13 +7,14 @@ given stride, compute NLL on the non-overlapping tail of each window.
 from __future__ import annotations
 
 import math
+import warnings
 
 import torch
 from tqdm import tqdm
 
 # --- knobs (tweak at call site or here) -------------------------------------- #
-DEFAULT_MAX_LENGTH: int = 2048
-DEFAULT_STRIDE: int = 1024
+DEFAULT_MAX_LENGTH: int = 8192
+DEFAULT_STRIDE: int = 512
 
 
 @torch.no_grad()
@@ -26,7 +27,12 @@ def perplexity(
     device: str | torch.device = "cuda",
 ) -> float:
     """Return perplexity of ``model`` on ``text`` via sliding-window NLL."""
-    enc = tokenizer(text, return_tensors="pt")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*longer than the specified maximum sequence length.*",
+        )
+        enc = tokenizer(text, return_tensors="pt")
     input_ids = enc.input_ids.to(device)
     seq_len = input_ids.size(1)
 

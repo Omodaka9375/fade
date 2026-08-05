@@ -40,7 +40,8 @@ DEFAULT_INT4_BUDGET: int | None = None  # None = unlimited (no eviction in Phase
 DEFAULT_INT2_BUDGET: int = 0  # Phase 2 enables the INT2 tier
 DEFAULT_ROPE_THETA: float = 10000.0
 DEFAULT_FP16_PREALLOC: int = 128  # initial pre-allocated capacity for FP16 tier
-DEFAULT_MAX_DEQUANT_AGE: int | None = None  # None = keep forever; int = drop after N updates
+DEFAULT_MAX_DEQUANT_AGE: int = 64  # Drop dequant caches after N updates (prevents memory bloat)
+DEFAULT_CACHE_DEQUANT: bool = False  # Default to False for honest memory accounting
 
 TIER_FP16: int = 0
 TIER_INT4: int = 1
@@ -168,7 +169,7 @@ class TieredKVCache(DynamicCache):
         int4_budget: int | None = DEFAULT_INT4_BUDGET,
         int2_budget: int = DEFAULT_INT2_BUDGET,
         dtype: torch.dtype = torch.float16,
-        cache_dequant: bool = True,
+        cache_dequant: bool = DEFAULT_CACHE_DEQUANT,
         rope_theta: float = DEFAULT_ROPE_THETA,
         head_dim: int | None = None,
         batch_size: int | None = None,
@@ -179,15 +180,17 @@ class TieredKVCache(DynamicCache):
         eviction_policy: str = "position",
         reassign_every: int = 64,
         auto_reassign: bool = True,
+        max_dequant_age: int | None = DEFAULT_MAX_DEQUANT_AGE,
     ) -> None:
         """Tiered KV cache.
 
         Args:
-            cache_dequant: if True (default), keep the dequantized INT4 tier
-                between forward passes so we don't pay the dequant cost on every
-                step. Faster, but ``storage_bytes`` will include the cached
-                dequant buffer (negating the at-rest memory savings until the
-                next reassignment). Set to False to prioritize at-rest memory.
+            cache_dequant: if True, keep the dequantized INT4/INT2 tiers in
+                memory between forward passes for faster access. This trades
+                memory for speed - the dequant buffers are full FP16 copies,
+                which can double your actual GPU memory usage. Default is False
+                to prioritize honest memory savings. Set to True if you need
+                maximum throughput and have memory to spare.
             rope_theta: RoPE base frequency (from model config). Ignored if
                 ``rope_scheme`` is provided.
             head_dim: attention head dimension. If None, inferred on first
@@ -202,6 +205,10 @@ class TieredKVCache(DynamicCache):
             middle_v_bits: quantization bits for V in the middle tier (4 or 2).
                 Set ``middle_v_bits=2`` with ``middle_k_bits=4`` for asymmetric
                 compression — V tolerates INT2 better than K.
+            max_dequant_age: automatically drop dequant caches after N update
+                steps. Prevents memory bloat when ``cache_dequant=True``. Set to
+                None to keep dequant caches forever (not recommended). Default
+                is 64 (same as typical reassignment period).
         """
         super().__init__()
         self.n_sink = n_sink
@@ -212,10 +219,14 @@ class TieredKVCache(DynamicCache):
         self.cache_dequant = cache_dequant
         self.rope_theta = rope_theta
         self.head_dim = head_dim
-        self.batch_size = batch_size
-        self.max_dequant_age = DEFAULT_MAX_DEQUANT_AGE
+        self.max_dequant_age = max_dequant_age
         self.middle_k_bits = middle_k_bits
         self.middle_v_bits = middle_v_bits
+        # NOTE: `batch_size` is exposed as a property (defined below) to override
+        # the read-only base ``Cache.batch_size`` property on transformers>=5.x.
+        # The real backing storage lives in ``_batch_size`` (can be None until
+        # the first ``update()`` infers it).
+        self._batch_size = batch_size
         if isinstance(quant_backend, str):
             self._quant_backend: QuantBackend = get_backend(quant_backend, head_dim=head_dim or 64)
         else:
@@ -231,6 +242,21 @@ class TieredKVCache(DynamicCache):
         self._reassign_every = reassign_every
         self._auto_reassign = auto_reassign
         self._decode_step = 0  # counter for decode steps (reset on prefill)
+
+    @property
+    def batch_size(self) -> int | None:
+        """Inferred / pinned batch size.
+
+        Backed by ``_batch_size``. Overrides the read-only base
+        ``Cache.batch_size`` property (which reads from ``self.layers``) on
+        transformers>=5.x, so we keep our own scaling buffer tracking.
+        Returns ``None`` until the first ``update()`` infers it.
+        """
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int | None) -> None:
+        self._batch_size = value
 
     def set_skip_layers(self, layer_indices: set[int] | list[int]) -> None:
         """Mark layers as passthrough (no tier management).
@@ -489,12 +515,136 @@ class TieredKVCache(DynamicCache):
         Uses a running counter updated during ``apply_tier_assignment`` for
         O(1) reads. Falls back to the full walk when the counter hasn't been
         populated yet (pre-first-reassignment).
+
+        Returns:
+            Bytes for compressed storage only (INT4/INT2/PQ packed data + scales).
+            This is the minimum memory needed to persist the cache state.
         """
         # Fast path: use running counters if any layer has been reassigned.
         if self._layers and any(s._compressed_bytes > 0 for s in self._layers):
             return sum(s._compressed_bytes for s in self._layers)
         # Slow path: walk all tensors (pre-reassignment or fresh cache).
         return self._compute_compressed_bytes()
+
+    def resident_bytes(self) -> int:
+        """Total bytes currently held in GPU/CPU memory, including ALL overhead.
+
+        This is the *true* memory footprint that would show up in:
+            - ``torch.cuda.max_memory_allocated()``
+            - ``nvidia-smi``
+            - OS task manager
+
+        Includes:
+            - Compressed K/V (INT4/INT2/PQ packed data)
+            - Scales for quantization
+            - **Dequantized caches** (if ``cache_dequant=True``)
+            - FP16 sink and recent window tensors
+            - **Pre-allocated buffer overhead** (not just used portion)
+            - Position tensors for each tier
+
+        Use this when you need to know actual GPU memory usage, not just
+        theoretical compression ratios.
+
+        Returns:
+            Total resident memory in bytes.
+        """
+        total = 0
+        for state in self._layers:
+            # All compressed storage
+            total += self._layer_compressed_bytes(state)
+
+            # Dequantized caches (if cached)
+            for t in (
+                state.int4_k_deq,
+                state.int4_v_deq,
+                state.int2_k_deq,
+                state.int2_v_deq,
+                state.pq_k_deq,
+                state.pq_v_deq,
+            ):
+                if t is not None:
+                    total += int(t.element_size() * t.numel())
+
+            # Position tensors (often overlooked)
+            for t in (
+                state.sink_pos,
+                state.fp16_pos,
+                state.int4_pos,
+                state.int2_pos,
+                state.pq_pos,
+                state.backend_pos,
+            ):
+                if t is not None:
+                    total += int(t.element_size() * t.numel())
+
+            # Pre-allocated buffer overhead (use full capacity, not just used portion)
+            if state._fp16_buf_k is not None:
+                total += int(state._fp16_buf_k.element_size() * state._fp16_buf_k.numel())
+            if state._fp16_buf_v is not None:
+                total += int(state._fp16_buf_v.element_size() * state._fp16_buf_v.numel())
+            if state._fp16_buf_pos is not None:
+                total += int(state._fp16_buf_pos.element_size() * state._fp16_buf_pos.numel())
+
+        return total
+
+    def memory_breakdown(self) -> dict:
+        """Return a detailed breakdown of memory usage.
+
+        Useful for debugging and understanding where memory is being spent.
+
+        Returns:
+            Dict with keys:
+                - ``compressed_bytes``: Compressed K/V only
+                - ``dequant_bytes``: Cached dequantized FP16 copies
+                - ``position_bytes``: Position tracking tensors
+                - ``buffer_overhead_bytes``: Pre-allocated buffer slack
+                - ``resident_bytes``: Total (sum of above)
+        """
+        compressed = self.compressed_storage_bytes()
+        dequant = 0
+        position = 0
+        buffer_overhead = 0
+
+        for state in self._layers:
+            # Dequant
+            for t in (
+                state.int4_k_deq,
+                state.int4_v_deq,
+                state.int2_k_deq,
+                state.int2_v_deq,
+                state.pq_k_deq,
+                state.pq_v_deq,
+            ):
+                if t is not None:
+                    dequant += int(t.element_size() * t.numel())
+
+            # Position
+            for t in (
+                state.sink_pos,
+                state.fp16_pos,
+                state.int4_pos,
+                state.int2_pos,
+                state.pq_pos,
+                state.backend_pos,
+            ):
+                if t is not None:
+                    position += int(t.element_size() * t.numel())
+
+            # Buffer overhead
+            if state._fp16_buf_k is not None:
+                buffer_overhead += int(state._fp16_buf_k.element_size() * state._fp16_buf_k.numel())
+            if state._fp16_buf_v is not None:
+                buffer_overhead += int(state._fp16_buf_v.element_size() * state._fp16_buf_v.numel())
+            if state._fp16_buf_pos is not None:
+                buffer_overhead += int(state._fp16_buf_pos.element_size() * state._fp16_buf_pos.numel())
+
+        return {
+            "compressed_bytes": compressed,
+            "dequant_bytes": dequant,
+            "position_bytes": position,
+            "buffer_overhead_bytes": buffer_overhead,
+            "resident_bytes": self.resident_bytes(),
+        }
 
     def _compute_compressed_bytes(self) -> int:
         """Walk all tensors to compute compressed storage bytes."""

@@ -64,6 +64,12 @@ flowchart LR
 | **Fused INT4 (FADE)** | **0.189 ms** | **1.4×** |
 | Dequant + SDPA (old) | 0.932 ms | 7.0× |
 
+> **Note:** The fused INT4 kernel is available as a standalone component but is **not yet integrated** into the default `model.generate()` path. To use it, you must either:
+> 1. Use the manual decode loop with `FusedAttention` (see `examples/fused_decode.py`)
+> 2. Wait for full HF integration (future work - Option A from audit)
+
+The kernel provides 1.4× speedup over FP16 FlashAttention when used directly, but currently requires manual intervention to activate. See `fade/kernels/attention.py` for the API.
+
 ### How FADE compares (2026)
 
 | | **FADE** | **kvpress** (NVIDIA) | **TurboQuant** (Google, ICLR 2026) | **KVTC** (NVIDIA, ICLR 2026) |
@@ -341,10 +347,14 @@ tests/               # 136 tests, all CPU, no downloads
 
 1. **Attention impl**: `eager` only needed for H2O prefill. Use `load_model(attn_impl="auto")`.
 2. **Transformers version**: verified on 4.45 and 5.3. Weekly canary CI runs against `transformers@main`.
-3. **Memory**: use `cache.compressed_storage_bytes()`, not `nvidia-smi`.
+3. **Memory accounting**: 
+   - `cache.compressed_storage_bytes()` — at-rest size (compressed data only). This is the "on-disk" footprint.
+   - `cache.resident_bytes()` — actual GPU memory usage (includes dequant caches, buffer overhead). This matches `nvidia-smi`.
+   - Default `cache_dequant=False` prioritizes honest memory savings. Set to `True` for speed if you have memory to spare.
 4. **RoPE precision**: all math in float32, cast through model dtype to match rounding.
 5. **Hybrid models**: Qwen 3.5/3.6 DeltaNet layers are auto-skipped — only full-attention layers are tiered.
 6. **Triton kernels**: fused attention via `fused_int4_sdpa()`, unpack-only via `int4_sdpa(force_triton=True)`. Run `check_fused_parity()` to validate on your hardware.
+7. **Dequant cache age**: `cache.max_dequant_age=64` (default) automatically drops dequant buffers after N updates to prevent memory bloat.
 
 ## Citations
 

@@ -47,6 +47,7 @@ DEFAULT_TASKS: list[str] = [
 DEFAULT_MAX_SAMPLES: int = 50
 DEFAULT_MAX_NEW_TOKENS: int = 128
 DEFAULT_MAX_INPUT_TOKENS: int = 0  # 0 = use model's max_position_embeddings
+DEFAULT_TRUNCATION_STRATEGY: str = "warn"  # "warn", "truncate", "error"
 # REASSIGN_EVERY removed: P0-1 auto-reassign handles this internally
 
 
@@ -203,6 +204,55 @@ def _get_max_input_tokens(model, override: int = 0) -> int:
 
 
 # --- generation ------------------------------------------------------------- #
+def _truncate_context(context: str, tokenizer, max_tokens: int, strategy: str = "warn") -> tuple[str, bool]:
+    """Truncate context to fit within max_tokens while preserving key information.
+
+    Strategy:
+        - Keep the first 50% of context (often contains setup)
+        - Keep the last 50% of context (often contains the answer)
+        - This is better than truncating from the end which might lose the answer
+
+    Args:
+        context: Original context text
+        tokenizer: Model tokenizer
+        max_tokens: Maximum tokens allowed
+        strategy: "warn", "truncate", or "error"
+
+    Returns:
+        (truncated_context, was_truncated)
+    """
+    # Tokenize the full context
+    tokens = tokenizer.encode(context, add_special_tokens=False)
+    actual_tokens = len(tokens)
+
+    if actual_tokens <= max_tokens:
+        return context, False
+
+    # Need to truncate
+    if strategy == "error":
+        raise ValueError(
+            f"Context length ({actual_tokens} tokens) exceeds maximum ({max_tokens} tokens). "
+            "Set --truncation-strategy to 'truncate' or 'warn'."
+        )
+
+    if strategy == "warn":
+        import warnings
+        warnings.warn(
+            f"Context length ({actual_tokens} tokens) exceeds maximum ({max_tokens} tokens). "
+            "Truncating to preserve model stability.",
+            UserWarning,
+            stacklevel=2
+        )
+
+    # Split context: keep first half and last half
+    half = max_tokens // 2
+    first_half = tokenizer.decode(tokens[:half], skip_special_tokens=True)
+    last_half = tokenizer.decode(tokens[-half:], skip_special_tokens=True)
+
+    truncated = f"{first_half}\n...\n{last_half}"
+    return truncated, True
+
+
 @torch.no_grad()
 def generate_with_fade(
     model,
@@ -211,15 +261,36 @@ def generate_with_fade(
     preset: str | None,
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
     max_input_tokens: int = 0,
+    truncation_strategy: str = DEFAULT_TRUNCATION_STRATEGY,
 ) -> str:
     """Generate using model.generate() for both baseline and FADE paths.
 
     Uses model.generate(past_key_values=cache) for FADE presets so the
     generation path is identical to baseline (fair comparison).
+
+    Handles long contexts by:
+    1. Using model's max_position_embeddings as default limit
+    2. Truncating intelligently if prompt exceeds limits
+    3. Preserving both beginning and end of context
     """
     max_len = max_input_tokens if max_input_tokens > 0 else _get_max_input_tokens(model)
-    # Do NOT truncate - let the cache handle long context via auto-reassign (P0-1)
-    enc = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+
+    # Tokenize without truncation first to check length
+    full_enc = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
+    prompt_tokens = full_enc.input_ids.shape[1]
+
+    # Check if we need truncation
+    if prompt_tokens > max_len:
+        # Truncate the prompt
+        truncated_prompt, was_truncated = _truncate_context(
+            prompt, tokenizer, max_len - max_new_tokens, strategy=truncation_strategy
+        )
+        enc = tokenizer(truncated_prompt, return_tensors="pt").to(DEVICE)
+        if was_truncated:
+            actual_len = enc.input_ids.shape[1]
+            print(f"    [truncated from {prompt_tokens} to {actual_len} tokens]")
+    else:
+        enc = full_enc.to(DEVICE)
 
     if preset is None:
         # Baseline: plain model.generate().
@@ -256,6 +327,7 @@ def evaluate_task(
     preset: str | None,
     max_samples: int,
     max_input_tokens: int = 0,
+    truncation_strategy: str = DEFAULT_TRUNCATION_STRATEGY,
 ) -> dict:
     """Evaluate one task with one preset."""
     samples = load_longbench_task(task, max_samples)
@@ -265,7 +337,8 @@ def evaluate_task(
     for i, sample in enumerate(samples):
         prompt = _build_prompt(tokenizer, sample["context"], sample["input"], task)
         prediction = generate_with_fade(
-            model, tokenizer, prompt, preset, max_input_tokens=resolved_max
+            model, tokenizer, prompt, preset, max_input_tokens=resolved_max,
+            truncation_strategy=truncation_strategy
         )
         s = score_sample(prediction, sample["answers"], task)
         scores.append(s)
@@ -294,6 +367,13 @@ def main() -> None:
         default=DEFAULT_MAX_INPUT_TOKENS,
         help="Max input tokens (0 = model's max_position_embeddings, capped at 32768).",
     )
+    parser.add_argument(
+        "--truncation-strategy",
+        type=str,
+        default=DEFAULT_TRUNCATION_STRATEGY,
+        choices=["warn", "truncate", "error"],
+        help="How to handle contexts exceeding max length: warn (default), truncate, or error.",
+    )
     parser.add_argument("--out", type=str, default="benchmarks/longbench_results.json")
     args = parser.parse_args()
 
@@ -315,7 +395,8 @@ def main() -> None:
         for task in args.tasks:
             print(f"\n  Task: {task}")
             result = evaluate_task(
-                model, tokenizer, task, preset, args.max_samples, args.max_input_tokens
+                model, tokenizer, task, preset, args.max_samples,
+                args.max_input_tokens, args.truncation_strategy
             )
             task_scores.append(result)
             print(f"  → {result['avg_score']:.1f}")
