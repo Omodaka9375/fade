@@ -14,8 +14,7 @@ Usage:
 from __future__ import annotations
 
 import torch
-from torch import nn
-from torch import Tensor
+from torch import Tensor, nn
 
 from fade import FadeConfig, create_tiered_cache
 from fade.kernels.attention import FusedAttention
@@ -130,19 +129,18 @@ def patch_model_with_fused_attention(model, config: FadeConfig | None = None):
         # Find the attention module
         attn_module = None
         for name, module in layer.named_modules():
-            if "self_attn" in name or "attention" in name.lower():
-                if isinstance(module, nn.Module):
-                    attn_module = module
-                    break
+            if ("self_attn" in name or "attention" in name.lower()) and isinstance(
+                module, nn.Module
+            ):
+                attn_module = module
+                break
 
         if attn_module is None:
             continue
 
         # Wrap the attention
         original_attn = attn_module
-        wrapped = FusedAttentionWrapper(
-            original_attn, layer_idx, cache, fused_attn
-        )
+        wrapped = FusedAttentionWrapper(original_attn, layer_idx, cache, fused_attn)
 
         # Replace in parent
         # This is model-specific - need to find the correct attribute name
@@ -183,7 +181,9 @@ def demonstrate_fused_kernel():
 
     print(f"Original K size: {k.element_size() * k.numel() / 1024:.1f} KB")
     print(f"Packed K size:   {k_packed.element_size() * k_packed.numel() / 1024:.1f} KB")
-    print(f"Compression:     {k.element_size() * k.numel() / max(k_packed.element_size() * k_packed.numel(), 1):.1f}x")
+    print(
+        f"Compression:     {k.element_size() * k.numel() / max(k_packed.element_size() * k_packed.numel(), 1):.1f}x"
+    )
 
     # Use fused attention
     fused_attn = FusedAttention()

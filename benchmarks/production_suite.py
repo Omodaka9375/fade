@@ -30,14 +30,12 @@ from transformers import DynamicCache
 # benchmarks/ is a scripts directory, not an installed package — add it to
 # sys.path so sibling modules like unified_eval can be imported directly.
 sys.path.insert(0, str(Path(__file__).parent))
-from unified_eval import evaluate_config, evaluate_preset_grid, print_unified_results  # noqa: E402
+from unified_eval import evaluate_config
 
 from fade import FadeConfig, create_tiered_cache
 from fade.backends import get_backend
 from fade.eval.memory import cache_storage_bytes
-from fade.eval.needle import run_needle
 from fade.patch import forward_with_tracking, load_model
-from fade.policy import reassign_tiers_by_position
 from fade.tracker import AttentionTracker
 
 # --- configuration (top of file for easy override) -------------------------- #
@@ -112,11 +110,8 @@ def measure_fp16_baseline_bytes(model, tokenizer, target_tokens: int) -> int:
     cfg = getattr(model, "config", None)
     text_cfg = getattr(cfg, "text_config", cfg)
     num_layers = text_cfg.num_hidden_layers
-    head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
-    num_kv_heads = getattr(text_cfg, "num_key_value_heads", text_cfg.num_attention_heads)
 
     input_ids = _make_filler(tokenizer, target_tokens)
-    S = input_ids.shape[1]
 
     # Use actual DynamicCache to measure baseline
     baseline_cache = DynamicCache()
@@ -254,15 +249,19 @@ def benchmark_model(model_id: str, skip_ppl: bool = False) -> dict:
         unified_results = []
         for preset_name in ["safe", "balanced", "aggressive"]:
             r = evaluate_config(
-                model, tokenizer, preset=preset_name,
+                model,
+                tokenizer,
+                preset=preset_name,
                 target_tokens=2048,
                 eval_ppl=False,
                 eval_needle=False,
-                device=DEVICE
+                device=DEVICE,
             )
             unified_results.append(r)
-            print(f"  {preset_name}: {r['compression']:.1f}x compression, "
-                  f"KV: {r['kv_mib']:.1f} MiB, Peak: {r['peak_memory_mib']:.1f} MiB")
+            print(
+                f"  {preset_name}: {r['compression']:.1f}x compression, "
+                f"KV: {r['kv_mib']:.1f} MiB, Peak: {r['peak_memory_mib']:.1f} MiB"
+            )
     else:
         # Get baseline PPL first
         print("\n  Computing baseline FP16 PPL...")
@@ -277,16 +276,20 @@ def benchmark_model(model_id: str, skip_ppl: bool = False) -> dict:
             print(f"  {preset_name}...", end=" ", flush=True)
             try:
                 r = evaluate_config(
-                    model, tokenizer, preset=preset_name,
+                    model,
+                    tokenizer,
+                    preset=preset_name,
                     target_tokens=2048,
                     eval_ppl=True,
                     eval_needle=False,
-                    device=DEVICE
+                    device=DEVICE,
                 )
                 unified_results.append(r)
-                print(f"Compression: {r['compression']:.1f}x, "
-                      f"PPL: {r['ppl']:.2f} ({r['ppl_delta_pct']:+.1f}%), "
-                      f"KV: {r['kv_mib']:.1f} MiB")
+                print(
+                    f"Compression: {r['compression']:.1f}x, "
+                    f"PPL: {r['ppl']:.2f} ({r['ppl_delta_pct']:+.1f}%), "
+                    f"KV: {r['kv_mib']:.1f} MiB"
+                )
             except Exception as e:
                 print(f"ERROR: {e}")
                 unified_results.append({"preset": preset_name, "error": str(e)})
@@ -337,8 +340,8 @@ def print_markdown_summary(all_results: list[dict]) -> str:
                 if "error" in r:
                     lines.append(f"| {r.get('preset', '?')} | ERROR | — | — |")
                     continue
-                kv   = f"{r['kv_mib']:.2f} MiB"
-                comp = f"**{r['compression']:.1f}×**"
+                kv = f"{r['kv_mib']:.2f} MiB"
+                comp = f"**{r['compression']:.1f}x**"
                 delta = f"{r['ppl_delta_pct']:+.1f}%" if "ppl_delta_pct" in r else "—"
                 lines.append(f"| {r['preset']} | {kv} | {comp} | {delta} |")
         else:

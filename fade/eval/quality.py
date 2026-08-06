@@ -14,7 +14,8 @@ quality under compression.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -118,7 +119,9 @@ def run_needle_test(
     Returns:
         Dict with keys ``prompt_tokens``, ``answer``, and ``passed``.
     """
-    result = run_needle(model, tokenizer, target_tokens=target_tokens, device=device, cache_factory=cache_factory)
+    result = run_needle(
+        model, tokenizer, target_tokens=target_tokens, device=device, cache_factory=cache_factory
+    )
     return result
 
 

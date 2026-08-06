@@ -27,10 +27,8 @@ from transformers import DynamicCache
 from fade.eval.memory import PeakMemory, cache_storage_bytes
 from fade.eval.needle import run_needle
 from fade.eval.perplexity import perplexity
-from fade.kernels.attention import FusedAttention
 from fade.patch import create_tiered_cache, forward_with_tracking, load_model
 from fade.policy import reassign_tiers, reassign_tiers_by_position, reassign_tiers_h2o
-from fade.quant import quant_k_int4, quant_v_int4
 from fade.tracker import AttentionTracker
 
 # --- configuration (all knobs at the top) ------------------------------------ #
@@ -280,9 +278,6 @@ def greedy_generate(
     next_token = out.logits[:, -1:, :].argmax(dim=-1)
     generated: list[torch.Tensor] = [next_token]
 
-    # Initialize fused attention if enabled
-    fused_attn = FusedAttention(force_fused=True) if (use_fused_attention and USE_FUSED_ATTENTION) else None
-
     for step in range(max_new_tokens - 1):
         # TODO: Fused attention integration point
         # To use fused INT4 kernel here, you would need to:
@@ -459,24 +454,22 @@ def main() -> None:
     # --------------------------- NEEDLE ------------------------------ #
     if RUN_NEEDLE:
         print("\n=== NEEDLE-IN-A-HAYSTACK ===")
-        # Create a cache factory that uses the same config as the tiered run
-        if use_tiered_policy:
-            from fade import FadeConfig
-            from fade.patch import create_tiered_cache
+        # The tiered cache is always used in this script, so needle runs against FADE.
+        from fade import FadeConfig
 
-            config = FadeConfig(
-                phase="2" if PHASE == "2" else "1a",
-                n_sink=N_SINK,
-                recent_window=RECENT_WINDOW,
-                int4_budget=INT4_BUDGET if PHASE == "2" else None,
-                int2_budget=INT2_BUDGET,
-                eviction_policy=EVICTION_POLICY,
-            )
-            cache_factory = lambda: create_tiered_cache(model, dtype=DTYPE, config=config)
-            print(f"Testing with FADE cache: {config.phase}, {config.eviction_policy}")
-        else:
-            cache_factory = None
-            print("Testing with baseline (uncompressed) cache")
+        config = FadeConfig(
+            phase="2" if PHASE == "2" else "1a",
+            n_sink=N_SINK,
+            recent_window=RECENT_WINDOW,
+            int4_budget=INT4_BUDGET if PHASE == "2" else None,
+            int2_budget=INT2_BUDGET,
+            eviction_policy=EVICTION_POLICY,
+        )
+
+        def cache_factory():
+            return create_tiered_cache(model, dtype=DTYPE, config=config)
+
+        print(f"Testing with FADE cache: {config.phase}, {config.eviction_policy}")
 
         result = run_needle(
             model,

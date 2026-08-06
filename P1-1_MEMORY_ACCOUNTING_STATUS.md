@@ -26,7 +26,7 @@ DEFAULT_MAX_DEQUANT_AGE: int | None = None
 
 # After:
 DEFAULT_CACHE_DEQUANT: bool = False  # Prioritize honest memory savings
-DEFAULT_MAX_DEQUANT_AGE: int = 64    # Auto-drop dequant after 64 updates
+DEFAULT_MAX_DEQUANT_AGE: int = 64  # Auto-drop dequant after 64 updates
 ```
 
 **Impact**: New users now get honest memory accounting by default. Dequant caches are dropped automatically to prevent memory bloat.

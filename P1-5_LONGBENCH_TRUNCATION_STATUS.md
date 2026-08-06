@@ -73,7 +73,7 @@ parser.add_argument(
     type=str,
     default="warn",
     choices=["warn", "truncate", "error"],
-    help="How to handle contexts exceeding max length."
+    help="How to handle contexts exceeding max length.",
 )
 ```
 

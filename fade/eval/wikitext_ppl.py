@@ -18,10 +18,10 @@ Requires ``pip install fade-kv[eval]`` (pulls ``datasets``).
 
 Usage:
     from fade.eval.wikitext_ppl import wikitext2_perplexity, wikitext2_fade_ppl
-    
+
     # Teacher-forced (standard academic metric)
     ppl = wikitext2_perplexity(model, tokenizer, device="cuda")
-    
+
     # Auto-regressive (actual generation quality)
     ppl = wikitext2_fade_ppl(model, tokenizer, preset="balanced", mode="generate")
 """
@@ -29,7 +29,6 @@ Usage:
 from __future__ import annotations
 
 import math
-
 import warnings
 
 import torch
@@ -146,7 +145,7 @@ def wikitext2_fade_ppl_teacher_forced(
 
     **NOTE**: This is the OLD implementation that was criticized in the audit.
     It uses teacher-forced decoding which doesn't measure actual generation quality.
-    
+
     For actual generation quality, use ``wikitext2_fade_ppl(..., mode="generate")``.
 
     This maintains a **persistent cache** across chunks and triggers tier
@@ -269,7 +268,7 @@ def wikitext2_fade_ppl(
     Example:
         # Honest generation quality measurement
         ppl = wikitext2_fade_ppl(model, tokenizer, preset="balanced", mode="generate")
-        
+
         # Teacher-forced (academic standard, but doesn't test generation)
         ppl = wikitext2_fade_ppl(model, tokenizer, preset="balanced", mode="teacher_forced")
     """
@@ -305,7 +304,7 @@ def wikitext2_fade_ppl(
 
     for begin in tqdm(range(0, seq_len, stride), desc=f"fade-ppl-{preset}-gen", leave=False):
         end = min(begin + max_length, seq_len)
-        window = input_ids[:, begin:end]       # [1, W] ground-truth tokens
+        window = input_ids[:, begin:end]  # [1, W] ground-truth tokens
         window_len = window.size(1)
 
         if last_token is None:
@@ -329,7 +328,7 @@ def wikitext2_fade_ppl(
             # portion).  stride tokens are new; max_length - stride tokens were
             # already fed in the previous chunk.
             n_new = min(stride, window_len)
-            new_tokens = window[:, -n_new:]          # rightmost n_new tokens
+            new_tokens = window[:, -n_new:]  # rightmost n_new tokens
             if new_tokens.shape[1] == 0:
                 continue
             target = new_tokens.clone()
@@ -341,7 +340,7 @@ def wikitext2_fade_ppl(
         # PPL differ from teacher-forced PPL).  We discard the token itself;
         # its only purpose is to leave the cache in the state the model would
         # reach after actual generation, not after teacher-forcing.
-        last_tok_input = window[:, -1:]    # last ground-truth token as seed
+        last_tok_input = window[:, -1:]  # last ground-truth token as seed
         gen_out = model(last_tok_input, past_key_values=cache, use_cache=True)
         last_token = gen_out.logits[:, -1, :].argmax(dim=-1, keepdim=True)  # [1,1]
 
@@ -383,9 +382,7 @@ def wikitext2_delta_ppl(
     if baseline_ppl is None:
         baseline_ppl = wikitext2_perplexity(model, tokenizer, **kwargs)
 
-    ppl = wikitext2_fade_ppl(
-        model, tokenizer, preset=preset, mode=mode, **kwargs
-    )
+    ppl = wikitext2_fade_ppl(model, tokenizer, preset=preset, mode=mode, **kwargs)
     delta = ppl - baseline_ppl
     delta_pct = (delta / baseline_ppl) * 100 if baseline_ppl > 0 else 0.0
 

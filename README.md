@@ -127,15 +127,18 @@ cache = create_tiered_cache(model, config=FadeConfig.aggressive())
 ### Custom config
 
 ```python
-cache = create_tiered_cache(model, config=FadeConfig(
-    phase="2",
-    n_sink=4,
-    recent_window=64,
-    int4_budget=400,
-    eviction_policy="h2o",       # "h2o", "ema", "position", or "learned"
-    middle_k_bits=4,             # K stays INT4 (outlier-sensitive)
-    middle_v_bits=2,             # V at INT2 (~30% more compression)
-))
+cache = create_tiered_cache(
+    model,
+    config=FadeConfig(
+        phase="2",
+        n_sink=4,
+        recent_window=64,
+        int4_budget=400,
+        eviction_policy="h2o",  # "h2o", "ema", "position", or "learned"
+        middle_k_bits=4,  # K stays INT4 (outlier-sensitive)
+        middle_v_bits=2,  # V at INT2 (~30% more compression)
+    ),
+)
 ```
 
 ### Rotated 2-bit backend (~6× compression)
@@ -143,8 +146,9 @@ cache = create_tiered_cache(model, config=FadeConfig(
 ```python
 from fade.backends import get_backend
 
-cache = create_tiered_cache(model, config=FadeConfig.safe(),
-    quant_backend=get_backend("rotated", head_dim=64, bits=2))
+cache = create_tiered_cache(
+    model, config=FadeConfig.safe(), quant_backend=get_backend("rotated", head_dim=64, bits=2)
+)
 ```
 
 Random orthogonal rotation spreads per-channel outliers before quantization, making 2-bit viable. Uses native PyTorch — no external dependencies.
@@ -213,6 +217,7 @@ Two modes:
 ```python
 # Use the fused kernel directly:
 from fade.kernels.fused_int4_attn import fused_int4_sdpa
+
 out = fused_int4_sdpa(q, k_packed, k_scale, v_packed, v_scale)
 ```
 
@@ -242,6 +247,7 @@ cache.load_cache_state_dict(torch.load("cache.pt"))
 
 ```python
 from fade.telemetry import JsonlExporter, attach_telemetry
+
 attach_telemetry(cache, JsonlExporter("events.jsonl"))
 ```
 
@@ -251,6 +257,7 @@ Debug dump: `cache.dump_debug("snapshot.json")`
 
 ```python
 from fade.codebook import PQCodebook
+
 cb = PQCodebook.train(calibration_vectors, sub_dim=32, num_centroids=256)
 cache.set_codebooks(cb)  # enables TIER_PQ in tier assignment
 ```

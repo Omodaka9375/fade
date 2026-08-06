@@ -11,9 +11,9 @@ execution, not separate runs. This ensures:
 
 Usage:
     from benchmarks.unified_eval import evaluate_config
-    
+
     result = evaluate_config(
-        model, tokenizer, 
+        model, tokenizer,
         preset="balanced",
         eval_ppl=True,
         eval_needle=True,
@@ -26,7 +26,6 @@ Usage:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import torch
@@ -35,7 +34,7 @@ from fade import FadeConfig, create_tiered_cache
 from fade.eval.memory import PeakMemory, cache_storage_bytes
 from fade.eval.needle import run_needle
 from fade.eval.wikitext_ppl import wikitext2_perplexity
-from fade.patch import forward_with_tracking, load_model
+from fade.patch import forward_with_tracking
 from fade.policy import reassign_tiers_by_position
 from fade.tracker import AttentionTracker
 
@@ -99,7 +98,6 @@ def evaluate_config(
     cfg = getattr(model, "config", None)
     text_cfg = getattr(cfg, "text_config", cfg)
     num_layers = text_cfg.num_hidden_layers
-    head_dim = getattr(text_cfg, "head_dim", text_cfg.hidden_size // text_cfg.num_attention_heads)
 
     # Create FADE cache
     preset_fn = getattr(FadeConfig, preset, FadeConfig.safe)
@@ -112,7 +110,6 @@ def evaluate_config(
 
     # Create filler prompt for compression measurement
     input_ids = _make_filler(tokenizer, target_tokens).to(device)
-    S = input_ids.shape[1]
 
     # Prefill the FADE cache, then explicitly reassign tiers so quantization
     # actually runs before we measure bytes. Auto-reassign only fires during
@@ -165,10 +162,8 @@ def evaluate_config(
     if eval_needle:
         # Create a fresh cache for needle test
         needle_cache = create_tiered_cache(model, dtype=dtype, config=config)
-        needle_tracker = AttentionTracker(num_layers=num_layers)
         needle_result = run_needle(
-            model, tokenizer, target_tokens=2048, device=device,
-            cache_factory=lambda: needle_cache
+            model, tokenizer, target_tokens=2048, device=device, cache_factory=lambda: needle_cache
         )
         result["needle_passed"] = needle_result["passed"]
         result["needle_answer"] = needle_result["answer"][:100]
@@ -178,27 +173,28 @@ def evaluate_config(
         # Simple TPS measurement
         prompt = "Explain how transformer attention works."
         enc = tokenizer(prompt, return_tensors="pt").to(device)
-        
+
         tps_cache = create_tiered_cache(model, dtype=dtype, config=config)
         tps_tracker = AttentionTracker(num_layers=num_layers)
-        
+
         # Prefill
         forward_with_tracking(model, enc.input_ids, tps_cache, tracker=tps_tracker)
         tok = enc.input_ids[:, -1:]
 
         import time
+
         if device == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
-        
+
         for _ in range(64):
             out = model(tok, past_key_values=tps_cache, use_cache=True)
             tok = out.logits[:, -1:, :].argmax(dim=-1)
-        
+
         if device == "cuda":
             torch.cuda.synchronize()
         elapsed = time.perf_counter() - t0
-        
+
         result["tps"] = round(64 / elapsed, 1)
 
     return result
@@ -240,16 +236,20 @@ def evaluate_preset_grid(
     for preset in presets:
         print(f"Evaluating {preset}...")
         result = evaluate_config(
-            model, tokenizer, preset=preset,
+            model,
+            tokenizer,
+            preset=preset,
             target_tokens=target_tokens,
             eval_ppl=True,
             eval_needle=False,
-            device=device
+            device=device,
         )
         results.append(result)
-        print(f"  Compression: {result['compression']:.1f}x, "
-              f"PPL: {result['ppl']:.2f} ({result['ppl_delta_pct']:+.1f}%), "
-              f"KV: {result['kv_mib']:.1f} MiB")
+        print(
+            f"  Compression: {result['compression']:.1f}x, "
+            f"PPL: {result['ppl']:.2f} ({result['ppl_delta_pct']:+.1f}%), "
+            f"KV: {result['kv_mib']:.1f} MiB"
+        )
 
     return results
 
@@ -259,13 +259,17 @@ def print_unified_results(results: list[dict[str, Any]]):
     print("\n" + "=" * 80)
     print("Unified Evaluation Results (Compression + Quality from Same Run)")
     print("=" * 80)
-    print(f"{'Preset':<12} {'Compression':<12} {'KV (MiB)':<10} {'PPL':<10} {'Δ PPL':<10} {'Peak Mem':<10}")
+    print(
+        f"{'Preset':<12} {'Compression':<12} {'KV (MiB)':<10} {'PPL':<10} {'Δ PPL':<10} {'Peak Mem':<10}"
+    )
     print("-" * 80)
 
     for r in results:
-        ppl_str = f"{r['ppl']:.2f}" if 'ppl' in r else "N/A"
-        delta_str = f"{r['ppl_delta_pct']:+.1f}%" if 'ppl_delta_pct' in r else "N/A"
-        print(f"{r['preset']:<12} {r['compression']:<12.1f}x {r['kv_mib']:<10.1f} "
-              f"{ppl_str:<10} {delta_str:<10} {r['peak_memory_mib']:<10.1f}")
+        ppl_str = f"{r['ppl']:.2f}" if "ppl" in r else "N/A"
+        delta_str = f"{r['ppl_delta_pct']:+.1f}%" if "ppl_delta_pct" in r else "N/A"
+        print(
+            f"{r['preset']:<12} {r['compression']:<12.1f}x {r['kv_mib']:<10.1f} "
+            f"{ppl_str:<10} {delta_str:<10} {r['peak_memory_mib']:<10.1f}"
+        )
 
     print("=" * 80)

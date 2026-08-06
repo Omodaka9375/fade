@@ -204,7 +204,9 @@ def _get_max_input_tokens(model, override: int = 0) -> int:
 
 
 # --- generation ------------------------------------------------------------- #
-def _truncate_context(context: str, tokenizer, max_tokens: int, strategy: str = "warn") -> tuple[str, bool]:
+def _truncate_context(
+    context: str, tokenizer, max_tokens: int, strategy: str = "warn"
+) -> tuple[str, bool]:
     """Truncate context to fit within max_tokens while preserving key information.
 
     Strategy:
@@ -237,11 +239,12 @@ def _truncate_context(context: str, tokenizer, max_tokens: int, strategy: str = 
 
     if strategy == "warn":
         import warnings
+
         warnings.warn(
             f"Context length ({actual_tokens} tokens) exceeds maximum ({max_tokens} tokens). "
             "Truncating to preserve model stability.",
             UserWarning,
-            stacklevel=2
+            stacklevel=2,
         )
 
     # Split context: keep first half and last half
@@ -337,8 +340,12 @@ def evaluate_task(
     for i, sample in enumerate(samples):
         prompt = _build_prompt(tokenizer, sample["context"], sample["input"], task)
         prediction = generate_with_fade(
-            model, tokenizer, prompt, preset, max_input_tokens=resolved_max,
-            truncation_strategy=truncation_strategy
+            model,
+            tokenizer,
+            prompt,
+            preset,
+            max_input_tokens=resolved_max,
+            truncation_strategy=truncation_strategy,
         )
         s = score_sample(prediction, sample["answers"], task)
         scores.append(s)
@@ -395,8 +402,13 @@ def main() -> None:
         for task in args.tasks:
             print(f"\n  Task: {task}")
             result = evaluate_task(
-                model, tokenizer, task, preset, args.max_samples,
-                args.max_input_tokens, args.truncation_strategy
+                model,
+                tokenizer,
+                task,
+                preset,
+                args.max_samples,
+                args.max_input_tokens,
+                args.truncation_strategy,
             )
             task_scores.append(result)
             print(f"  → {result['avg_score']:.1f}")

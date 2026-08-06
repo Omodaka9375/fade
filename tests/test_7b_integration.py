@@ -119,8 +119,14 @@ def test_needle_pass(model_and_tokenizer):
 
     # Create a FADE cache with balanced config
     config = FadeConfig.balanced()
-    config = config.with_overrides(eviction_policy="position")  # H2O needs attention, use position for test
-    cache_factory = lambda: create_tiered_cache(model, config=config)
+    config = config.with_overrides(
+        eviction_policy="position"
+    )  # H2O needs attention, use position for test
 
-    result = run_needle(model, tokenizer, target_tokens=2048, device=DEVICE, cache_factory=cache_factory)
+    def cache_factory():
+        return create_tiered_cache(model, config=config)
+
+    result = run_needle(
+        model, tokenizer, target_tokens=2048, device=DEVICE, cache_factory=cache_factory
+    )
     assert result["passed"], f"Needle FAIL with FADE cache: {result['answer']}"

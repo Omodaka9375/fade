@@ -33,20 +33,22 @@ This meant the README table showing "12× compression, Δ PPL 0.00" was **incons
 
 ```python
 def evaluate_config(
-    model, tokenizer, preset="balanced",
+    model,
+    tokenizer,
+    preset="balanced",
     target_tokens=2048,
     eval_ppl=True,
     eval_needle=False,
-    device="cuda"
+    device="cuda",
 ) -> dict:
     """Evaluate a FADE config with consistent compression and quality metrics.
-    
+
     This function runs a SINGLE evaluation pass that measures:
         1. Compression ratio: Actual KV cache size after compression
         2. Quality (PPL): Perplexity on WikiText-2 with the SAME cache
         3. Quality (Needle): Needle-in-haystack pass/fail
         4. Performance (TPS): Tokens per second (optional)
-    
+
     All metrics are measured from the SAME cache instance, ensuring
     consistency between compression and quality.
     """
@@ -68,11 +70,7 @@ ppl = wikitext2_fade_ppl(model, tokenizer, preset="balanced")
 # → Different runs, inconsistent results
 
 # After: Unified measurement
-result = evaluate_config(
-    model, tokenizer, preset="balanced",
-    eval_ppl=True,
-    device=DEVICE
-)
+result = evaluate_config(model, tokenizer, preset="balanced", eval_ppl=True, device=DEVICE)
 # → Same run, consistent results
 print(f"Compression: {result['compression']:.1f}x")
 print(f"PPL: {result['ppl']:.2f} (Δ {result['ppl_delta_pct']:+.1f}%)")
@@ -82,10 +80,7 @@ print(f"PPL: {result['ppl']:.2f} (Δ {result['ppl_delta_pct']:+.1f}%)")
 
 ```python
 results = evaluate_preset_grid(
-    model, tokenizer,
-    presets=["safe", "balanced", "aggressive"],
-    target_tokens=2048,
-    device="cuda"
+    model, tokenizer, presets=["safe", "balanced", "aggressive"], target_tokens=2048, device="cuda"
 )
 print_unified_results(results)
 ```
@@ -160,11 +155,7 @@ The unified evaluation follows this flow:
 from benchmarks.unified_eval import evaluate_config
 
 result = evaluate_config(
-    model, tokenizer,
-    preset="balanced",
-    target_tokens=2048,
-    eval_ppl=True,
-    device="cuda"
+    model, tokenizer, preset="balanced", target_tokens=2048, eval_ppl=True, device="cuda"
 )
 
 print(f"Compression: {result['compression']:.1f}x")
@@ -177,10 +168,7 @@ print(f"KV cache: {result['kv_mib']:.1f} MiB")
 from benchmarks.unified_eval import evaluate_preset_grid, print_unified_results
 
 results = evaluate_preset_grid(
-    model, tokenizer,
-    presets=["safe", "balanced", "aggressive"],
-    target_tokens=2048,
-    device="cuda"
+    model, tokenizer, presets=["safe", "balanced", "aggressive"], target_tokens=2048, device="cuda"
 )
 
 print_unified_results(results)
@@ -189,11 +177,7 @@ print_unified_results(results)
 #### Include needle test
 ```python
 result = evaluate_config(
-    model, tokenizer,
-    preset="balanced",
-    eval_ppl=True,
-    eval_needle=True,
-    device="cuda"
+    model, tokenizer, preset="balanced", eval_ppl=True, eval_needle=True, device="cuda"
 )
 
 print(f"Needle: {'PASS' if result['needle_passed'] else 'FAIL'}")

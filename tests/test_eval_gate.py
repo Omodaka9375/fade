@@ -171,13 +171,14 @@ def test_wikitext_ppl_uses_persistent_cache_with_reassignment():
     pytest.importorskip("datasets")
     from fade.eval.wikitext_ppl import wikitext2_fade_ppl
 
-    model, tokenizer, cfg = _tiny_model()
+    model, tokenizer, _cfg = _tiny_model()
 
     # Use a short text for fast testing
     text = "The quick brown fox jumps over the lazy dog. " * 20
 
     # Mock the _load_wikitext2 function to return our test text
     import fade.eval.wikitext_ppl as ppl_module
+
     original_load = ppl_module._load_wikitext2
     ppl_module._load_wikitext2 = lambda split="test": text
 
@@ -194,7 +195,7 @@ def test_wikitext_ppl_uses_persistent_cache_with_reassignment():
         # Verify we got a finite perplexity
         assert isinstance(ppl, float)
         assert ppl > 0
-        assert not float("inf") == ppl
+        assert float("inf") != ppl
     finally:
         # Restore original function
         ppl_module._load_wikitext2 = original_load

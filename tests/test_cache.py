@@ -346,7 +346,9 @@ def test_auto_reassign_on_generate_path():
         pos_step = torch.tensor([prefill_len + step])
         cos_step, sin_step = _make_rope_cos_sin(pos_step, D)
         k_rope_step = _apply_rope(k_step, cos_step, sin_step)
-        cache.update(k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step})
+        cache.update(
+            k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step}
+        )
 
     # After 12 decode steps with reassign_every=5, we should have triggered reassignment
     # Check that INT4 tier has tokens (compression happened)
@@ -394,7 +396,9 @@ def test_auto_reassign_disabled():
         pos_step = torch.tensor([prefill_len + step])
         cos_step, sin_step = _make_rope_cos_sin(pos_step, D)
         k_rope_step = _apply_rope(k_step, cos_step, sin_step)
-        cache.update(k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step})
+        cache.update(
+            k_rope_step, v_step, layer_idx=0, cache_kwargs={"cos": cos_step, "sin": sin_step}
+        )
 
     # With auto_reassign=False, INT4 tier should still be None (no compression)
     state = cache._layers[0]

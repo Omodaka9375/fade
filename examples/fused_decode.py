@@ -28,14 +28,12 @@ from __future__ import annotations
 import time
 
 import torch
-from transformers import DynamicCache
 
 from fade import FadeConfig, create_tiered_cache
 from fade.kernels.attention import FusedAttention
 from fade.kernels.fused_int4_attn import check_fused_parity
 from fade.patch import load_model
 from fade.policy import reassign_tiers_by_position
-from fade.quant import quant_k_int4, quant_v_int4
 
 
 def generate_with_fused_attention(
@@ -211,7 +209,9 @@ def main():
     print(f"Standard TPS:  {stats_std['tps']:.1f}")
     print(f"Fused TPS:     {stats_fused['tps']:.1f}")
     print(f"Speedup:       {speedup:.2f}x")
-    print(f"KV Compression: {stats_std['kv_cache_mib']:.1f} MiB → {stats_fused['kv_cache_mib']:.1f} MiB")
+    print(
+        f"KV Compression: {stats_std['kv_cache_mib']:.1f} MiB → {stats_fused['kv_cache_mib']:.1f} MiB"
+    )
 
     print("\n" + "=" * 60)
     print("Note: This is a simplified demo. For production use,")

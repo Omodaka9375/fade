@@ -119,15 +119,23 @@ def main() -> None:
         kwargs = {}
         if cfg.get("backend") == "rotated_2bit":
             from fade.backends import get_backend
+
             head_dim = model.config.hidden_size // model.config.num_attention_heads
             kwargs["quant_backend"] = get_backend("rotated", head_dim=head_dim, bits=2)
 
-        cache_factory = lambda c=config, kw=kwargs: create_tiered_cache(model, dtype=DTYPE, config=c, **kw)
+        def cache_factory(c=config, kw=kwargs):
+            return create_tiered_cache(model, dtype=DTYPE, config=c, **kw)
 
         for depth in NEEDLE_DEPTHS:
             print(f"      Depth {depth}...", end=" ", flush=True)
             try:
-                r = run_needle(model, tokenizer, target_tokens=depth, device=DEVICE, cache_factory=cache_factory)
+                r = run_needle(
+                    model,
+                    tokenizer,
+                    target_tokens=depth,
+                    device=DEVICE,
+                    cache_factory=cache_factory,
+                )
                 print(f"{'PASS' if r['passed'] else 'FAIL'} (answer: {r['answer'][:50]})")
             except Exception as e:
                 r = {"passed": False, "error": str(e)}

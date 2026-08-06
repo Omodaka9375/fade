@@ -283,7 +283,7 @@ class TieredKVCache(DynamicCache):
         the decode step counter hits ``reassign_every``. Falls back to
         position-based eviction when attention-based policies are not available.
         """
-        from fade.policy import reassign_tiers_adaptive, reassign_tiers_by_position
+        from fade.policy import reassign_tiers_by_position
 
         # Position-based is the safe default that requires no attention scores
         if self._eviction_policy == "position":
@@ -636,7 +636,9 @@ class TieredKVCache(DynamicCache):
             if state._fp16_buf_v is not None:
                 buffer_overhead += int(state._fp16_buf_v.element_size() * state._fp16_buf_v.numel())
             if state._fp16_buf_pos is not None:
-                buffer_overhead += int(state._fp16_buf_pos.element_size() * state._fp16_buf_pos.numel())
+                buffer_overhead += int(
+                    state._fp16_buf_pos.element_size() * state._fp16_buf_pos.numel()
+                )
 
         return {
             "compressed_bytes": compressed,

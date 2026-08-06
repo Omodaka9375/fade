@@ -12,9 +12,6 @@ Usage in manual decode:
 
 from __future__ import annotations
 
-from typing import Optional
-
-import torch
 from torch import Tensor
 
 from fade.kernels.fused_int4_attn import fused_int4_sdpa, fused_int4_sdpa_with_fallback
